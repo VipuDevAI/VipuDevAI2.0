@@ -1,0 +1,55 @@
+Downloading cache...
+==> Cloning from https://github.com/VipuDevAI/VipuDevAI2.0
+==> Checking out commit 70bc505bfed30be76f5341723b998ff45f1b812a in branch main
+==> Downloaded 262MB in 2s. Extraction took 6s.
+==> Using Node.js version 22.16.0 (default)
+==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+==> Running build command 'npm install --include=dev && npx drizzle-kit push && npm run build'...
+up to date, audited 444 packages in 2s
+44 packages are looking for funding
+  run `npm fund` for details
+4 moderate severity vulnerabilities
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+Run `npm audit` for details.
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/opt/render/project/src/drizzle.config.ts'
+Using 'pg' driver for database querying
+[⣷] Pulling schema from database...
+Error: getaddrinfo ENOTFOUND base
+    at /opt/render/project/src/node_modules/pg-pool/index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Object.query (/opt/render/project/src/node_modules/drizzle-kit/bin.cjs:80622:26)
+    at async fromDatabase2 (/opt/render/project/src/node_modules/drizzle-kit/bin.cjs:19276:25) {
+  errno: -3008,
+  code: 'ENOTFOUND',
+  syscall: 'getaddrinfo',
+  hostname: 'base'
+}
+> rest-express@1.0.0 build
+> tsx script/build.ts
+building client...
+vite v7.3.0 building client environment for production...
+transforming...
+✓ 2066 modules transformed.
+rendering chunks...
+[meta-images] no Replit deployment domain found, skipping meta tag updates
+computing gzip size...
+../dist/public/index.html                   1.55 kB │ gzip:   0.62 kB
+../dist/public/assets/index-1F0jSOqu.css  137.17 kB │ gzip:  20.55 kB
+../dist/public/assets/index-BcXxu-fJ.js   479.94 kB │ gzip: 140.09 kB
+✓ built in 3.38s
+building server...
+  dist/index.cjs  1.3mb ⚠️
+⚡ Done in 227ms
+==> Uploading build...
+==> Uploaded in 6.3s. Compression took 4.6s
+==> Build successful 🎉
+==> Setting WEB_CONCURRENCY=1 by default, based on available CPUs in the instance
+==> Deploying...
+==> Running 'node dist/index.cjs'
+/opt/render/project/src/dist/index.cjs:86
+==> Exited with status 1
+==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
+==> Running 'node dist/index.cjs'
+/opt/render/project/src/dist/index.cjs:86

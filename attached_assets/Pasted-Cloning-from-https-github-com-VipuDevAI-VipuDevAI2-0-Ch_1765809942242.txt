@@ -1,0 +1,51 @@
+Cloning from https://github.com/VipuDevAI/VipuDevAI2.0
+==> Checking out commit 069e3abd5b9467c9306fe57f9246a742cc09e437 in branch main
+==> Using Node.js version 22.16.0 (default)
+==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+==> Running build command 'npm install --include=dev && npx drizzle-kit push && npm run build'...
+added 443 packages, and audited 444 packages in 1m
+44 packages are looking for funding
+  run `npm fund` for details
+4 moderate severity vulnerabilities
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+Run `npm audit` for details.
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/opt/render/project/src/drizzle.config.ts'
+Using 'pg' driver for database querying
+[⣷] Pulling schema from database...
+Error: getaddrinfo ENOTFOUND base
+    at /opt/render/project/src/node_modules/pg-pool/index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Object.query (/opt/render/project/src/node_modules/drizzle-kit/bin.cjs:80622:26)
+    at async fromDatabase2 (/opt/render/project/src/node_modules/drizzle-kit/bin.cjs:19276:25) {
+  errno: -3008,
+  code: 'ENOTFOUND',
+  syscall: 'getaddrinfo',
+  hostname: 'base'
+}
+> rest-express@1.0.0 build
+> tsx script/build.ts
+building client...
+✘ [ERROR] Could not resolve "./vite-plugin-meta-images"
+    vite.config.ts:6:33:
+      6 │ import { metaImagesPlugin } from "./vite-plugin-meta-images";
+        ╵                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+failed to load config from /opt/render/project/src/vite.config.ts
+Error: Build failed with 1 error:
+vite.config.ts:6:33: ERROR: Could not resolve "./vite-plugin-meta-images"
+    at failureErrorWithLog (/opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:1467:15)
+    at /opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:926:25
+    at runOnEndCallbacks (/opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:1307:45)
+    at buildResponseToResult (/opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:924:7)
+    at /opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:951:16
+    at responseCallbacks.<computed> (/opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:603:9)
+    at handleIncomingPacket (/opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:658:12)
+    at Socket.readFromStdout (/opt/render/project/src/node_modules/vite/node_modules/esbuild/lib/main.js:581:7)
+    at Socket.emit (node:events:518:28)
+    at addChunk (node:internal/streams/readable:561:12) {
+  errors: [Getter/Setter],
+  warnings: [Getter/Setter]
+}
+==> Build failed 😞
+==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys

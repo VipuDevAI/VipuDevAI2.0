@@ -1,0 +1,493 @@
+// server/routes.ts
+import type { Express } from "express";
+import type { Server } from "http";
+
+import { storage } from "./storage";
+
+import {
+  insertProjectSchema,
+  insertChatMessageSchema,
+  insertCodeExecutionSchema,
+  insertUserConfigSchema,
+} from "../shared/schema";
+
+import { z } from "zod";
+import crypto from "crypto";
+import OpenAI from "openai";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { exec, spawn } from "child_process";
+import multer from "multer";
+import AdmZip from "adm-zip";
+import type { Request } from "express";
+
+// ========================================================
+// AUTH
+// ========================================================
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
+
+const tokens = new Set<string>();
+function generateToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+// ========================================================
+// OPENAI
+// ========================================================
+const openaiKey = process.env.OPENAI_API_KEY || "";
+const openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
+
+// ========================================================
+// FILE UPLOAD (MULTER)
+// ========================================================
+const upload = multer({
+  dest: path.join(os.tmpdir(), "vipu-uploads"),
+});
+
+// Type augmentation for req.file
+interface MulterRequest extends Request {
+  file?: Express.Multer.File;
+}
+
+// ========================================================
+// VIPU SYSTEM PROMPT
+// ========================================================
+const VIPU_SYSTEM_PROMPT = `
+You are VipuDevAI — Balaji’s senior full-stack developer assistant.
+Rules:
+- Always give working code.
+- Never say “I can’t”.
+- Behave like a professional engineer.
+- Output clean, structured answers.
+`;
+
+// ========================================================
+// MEMORY BUILDER
+// ========================================================
+async function buildMessages(
+  msgs: { role: "user" | "assistant" | "system"; content: string }[],
+  codeContext?: string,
+  projectId?: string | null,
+) {
+  let historyText = "";
+
+  try {
+    const hist = await storage.getChatMessages(20, projectId ?? null);
+
+    historyText = hist
+      .map((m) => `${m.role}: ${m.content}`)
+      .join("\n");
+  } catch {}
+
+  const base = [
+    {
+      role: "system",
+      content: `${VIPU_SYSTEM_PROMPT}\n\nMEMORY:\n${historyText || "(empty)"}`,
+    },
+  ];
+
+  if (codeContext) {
+    base.push({
+      role: "user",
+      content: `Code Context:\n${codeContext}`,
+    });
+  }
+
+  return [...base, ...msgs];
+}
+
+// ========================================================
+// ROUTES
+// ========================================================
+export async function registerRoutes(
+  httpServer: Server,
+  app: Express,
+): Promise<Server> {
+
+  // ======================================================
+  // HEALTH
+  // ======================================================
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  // ======================================================
+  // AUTH
+  // ======================================================
+  app.post("/api/auth/login", (req, res) => {
+    const { username, password } = req.body;
+
+    if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+      const token = generateToken();
+      tokens.add(token);
+      return res.json({ token });
+    }
+
+    res.status(401).json({ error: "Invalid credentials" });
+  });
+
+  app.get("/api/auth/verify", (req, res) => {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (token && tokens.has(token)) return res.json({ valid: true });
+
+    res.status(401).json({ error: "Invalid token" });
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (token) tokens.delete(token);
+    res.json({ message: "Logged out" });
+  });
+
+  // ======================================================
+  // PROJECT CRUD
+  // ======================================================
+  app.get("/api/projects", async (_req, res) => {
+    try {
+      const p = await storage.getProjects();
+      res.json({ projects: p });
+    } catch {
+      res.status(500).json({ error: "Failed to fetch projects" });
+    }
+  });
+
+  app.get("/api/projects/:id", async (req, res) => {
+    const proj = await storage.getProject(req.params.id);
+    if (!proj) return res.status(404).json({ error: "Not found" });
+    res.json({ project: proj });
+  });
+
+  app.post("/api/projects", async (req, res) => {
+    try {
+      const data = insertProjectSchema.parse(req.body);
+      const p = await storage.createProject(data);
+      res.status(201).json({ project: p });
+    } catch (e) {
+      if (e instanceof z.ZodError)
+        return res.status(400).json({ error: "Invalid", details: e.errors });
+      res.status(500).json({ error: "Failed" });
+    }
+  });
+
+  app.patch("/api/projects/:id", async (req, res) => {
+    try {
+      const data = insertProjectSchema.partial().parse(req.body);
+      const upd = await storage.updateProject(req.params.id, data);
+      if (!upd) return res.status(404).json({ error: "Not found" });
+      res.json({ project: upd });
+    } catch (e) {
+      if (e instanceof z.ZodError)
+        return res.status(400).json({ error: "Invalid", details: e.errors });
+      res.status(500).json({ error: "Failed update" });
+    }
+  });
+
+  app.delete("/api/projects/:id", async (req, res) => {
+    const ok = await storage.deleteProject(req.params.id);
+    if (!ok) return res.status(404).json({ error: "Not found" });
+    res.json({ success: true });
+  });
+
+  // ======================================================
+  // CHAT
+  // ======================================================
+  app.get("/api/chat/history", async (req, res) => {
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+    const projectId = (req.query.projectId as string) || null;
+
+    const msgs = await storage.getChatMessages(limit, projectId);
+    res.json({ messages: msgs });
+  });
+
+  app.post("/api/chat", async (req, res) => {
+    try {
+      const parsed = insertChatMessageSchema.parse(req.body);
+      const saved = await storage.createChatMessage(parsed);
+      res.json({ message: saved });
+    } catch (e) {
+      res.status(400).json({ error: "Invalid message" });
+    }
+  });
+
+  app.delete("/api/chat/history", async (req, res) => {
+    const projectId = (req.query.projectId as string) || null;
+    await storage.clearChatHistory(projectId);
+    res.json({ success: true });
+  });
+
+  // ======================================================
+  // CODE EXECUTIONS
+  // ======================================================
+  app.get("/api/executions", async (req, res) => {
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
+    const rows = await storage.getCodeExecutions(limit);
+    res.json({ executions: rows });
+  });
+
+  app.post("/api/executions", async (req, res) => {
+    try {
+      const parsed = insertCodeExecutionSchema.parse(req.body);
+      const execRow = await storage.createCodeExecution(parsed);
+      res.json({ execution: execRow });
+    } catch (e) {
+      res.status(400).json({ error: "Invalid execution" });
+    }
+  });
+
+  // ======================================================
+  // CONFIG
+  // ======================================================
+  app.get("/api/config", async (_req, res) => {
+    const conf = await storage.getConfig();
+    res.json({ config: conf || {} });
+  });
+
+  app.post("/api/config", async (req, res) => {
+    try {
+      const parsed = insertUserConfigSchema.parse(req.body);
+      const upd = await storage.updateConfig(parsed);
+      res.json({ config: upd });
+    } catch (e) {
+      res.status(400).json({ error: "Invalid config" });
+    }
+  });
+
+  // ======================================================
+  // ASSISTANT CHAT
+  // ======================================================
+  app.post("/api/assistant/chat", async (req, res) => {
+    if (!openai) return res.status(500).json({ error: "OpenAI key missing" });
+
+    try {
+      const { messages, codeContext, projectId } = req.body;
+
+      const finalMsg = await buildMessages(messages, codeContext, projectId);
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: finalMsg,
+        temperature: 0.15,
+      });
+
+      res.json({ reply: completion.choices[0]?.message?.content || "" });
+    } catch {
+      res.status(500).json({ error: "Assistant failed" });
+    }
+  });
+
+  // ======================================================
+  // SIMPLE RUN (JS / Python)
+  // ======================================================
+  app.post("/api/run", async (req, res) => {
+    const { code, language } = req.body;
+
+    if (!code) return res.status(400).json({ error: "Code required" });
+
+    const isPy = language === "python";
+    const ext = isPy ? ".py" : ".js";
+    const cmd = isPy ? "python3" : "node";
+
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "run-"));
+      const file = path.join(dir, "main" + ext);
+
+      fs.writeFileSync(file, code);
+
+      exec(`${cmd} ${file}`, { timeout: 8000 }, (err, stdout, stderr) => {
+        res.json({
+          stdout,
+          stderr,
+          exitCode: err?.code ?? 0,
+        });
+
+        fs.rmSync(dir, { recursive: true, force: true });
+      });
+    } catch {
+      res.status(500).json({ error: "Execute failed" });
+    }
+  });
+
+  // ======================================================
+  // RUN PROJECT (DOCKER)
+  // ======================================================
+  app.post("/api/run-project", async (req, res) => {
+    const { files, language } = req.body;
+
+    if (!files || !Array.isArray(files))
+      return res.status(400).json({ error: "files[] required" });
+
+    const image = language === "python" ? "python:3.11" : "node:18";
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "proj-"));
+
+    try {
+      for (const f of files) {
+        const safePath = f.path.replace(/^[/\\]+/, "");
+        const full = path.join(temp, safePath);
+
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, f.content || "");
+      }
+
+      const cmd = language === "python" ? "python main.py" : "node main.js";
+
+      const child = spawn(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "-v",
+          `${temp}:/app`,
+          "-w",
+          "/app",
+          image,
+          "bash",
+          "-lc",
+          cmd,
+        ],
+        {},
+      );
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.on("data", (d) => (stdout += d.toString()));
+      child.stderr.on("data", (d) => (stderr += d.toString()));
+
+      child.on("close", (code) => {
+        fs.rmSync(temp, { recursive: true, force: true });
+        res.json({ stdout, stderr, exitCode: code, imageUsed: image });
+      });
+    } catch {
+      fs.rmSync(temp, { recursive: true, force: true });
+      res.status(500).json({ error: "Docker failed" });
+    }
+  });
+
+  // ======================================================
+  // ZIP CODE
+  // ======================================================
+  app.post("/api/zip-code", (req, res) => {
+    const { code, filename } = req.body;
+
+    if (!code) return res.status(400).json({ error: "Code required" });
+
+    const safe = filename?.replace(/[^\w.\-]/g, "") || "main.js";
+
+    const zip = new AdmZip();
+    zip.addFile(safe, Buffer.from(code));
+    const buf = zip.toBuffer();
+
+    res.set({
+      "Content-Type": "application/zip",
+      "Content-Disposition": 'attachment; filename="vipu.zip"',
+    });
+
+    res.send(buf);
+  });
+
+  // ======================================================
+  // ANALYZE ZIP (AI)
+  // ======================================================
+  app.post(
+    "/api/analyze-zip",
+    upload.single("file"),
+    async (req: MulterRequest, res) => {
+      if (!req.file)
+        return res.status(400).json({ error: "File missing" });
+      if (!openai)
+        return res.status(500).json({ error: "Missing OpenAI key" });
+
+      try {
+        const zip = new AdmZip(req.file.path);
+        const entries = zip.getEntries();
+
+        const files: string[] = [];
+
+        for (const e of entries) {
+          if (files.length >= 25) break;
+          if (e.isDirectory) continue;
+          if (/\.(png|jpg|jpeg|gif|mp4|mp3|ico|pdf)$/i.test(e.entryName)) continue;
+
+          const content = e.getData().toString("utf8").slice(0, 15000);
+          files.push(`--- ${e.entryName} ---\n${content}`);
+        }
+
+        const promptMessages = await buildMessages(
+          [
+            { role: "user", content: "Analyze this ZIP project." },
+            { role: "assistant", content: files.join("\n\n") },
+          ],
+          undefined,
+        );
+
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: promptMessages,
+          temperature: 0.2,
+        });
+
+        res.json({
+          analysis: completion.choices[0]?.message?.content || "",
+          sampledFiles: files.length,
+        });
+
+        fs.unlinkSync(req.file.path);
+      } catch {
+        res.status(500).json({ error: "Analyze ZIP failed" });
+      }
+    },
+  );
+
+  // ======================================================
+  // PREVIEW SERVER
+  // ======================================================
+  let previewProc: any = null;
+  let previewURL: string | null = null;
+
+  app.post("/api/preview", async (req, res) => {
+    const { files } = req.body;
+    if (!files) return res.status(400).json({ error: "files required" });
+
+    if (previewProc) previewProc.kill("SIGKILL");
+
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "preview-"));
+
+    for (const f of files) {
+      const full = path.join(temp, f.path);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, f.content);
+    }
+
+    const script = `
+      import express from "express";
+      import path from "path";
+      import { fileURLToPath } from "url";
+      const app = express();
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      app.use(express.static(__dirname));
+      const port = process.env.PORT || 0;
+      app.listen(port, () => console.log("PREVIEW:" + port));
+    `;
+
+    fs.writeFileSync(path.join(temp, "preview.mjs"), script);
+
+    previewProc = spawn("node", ["preview.mjs"], {
+      cwd: temp,
+      env: { ...process.env, PORT: "0" },
+    });
+
+    previewProc.stdout.on("data", (d) => {
+      const text = d.toString();
+      if (text.includes("PREVIEW:")) {
+        const p = text.split("PREVIEW:")[1].trim();
+        previewURL = `http://localhost:${p}`;
+        res.json({ url: previewURL });
+      }
+    });
+  });
+
+  // END
+  return httpServer;
+}

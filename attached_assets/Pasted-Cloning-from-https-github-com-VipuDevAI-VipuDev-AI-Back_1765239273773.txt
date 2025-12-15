@@ -1,0 +1,37 @@
+Cloning from https://github.com/VipuDevAI/VipuDev_AI_Backend
+==> Checking out commit c5133dddbd0056c9e307cc48466148eb935b7abd in branch main
+==> Using Node.js version 22.16.0 (default)
+==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+==> Running build command 'npm install && npm run build'...
+added 422 packages, and audited 423 packages in 1m
+43 packages are looking for funding
+  run `npm fund` for details
+4 moderate severity vulnerabilities
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+Run `npm audit` for details.
+> rest-express@1.0.0 build
+> tsx script/build.ts
+building client...
+✘ [ERROR] Could not resolve "./vite-plugin-meta-images"
+    vite.config.ts:6:33:
+      6 │ import { metaImagesPlugin } from "./vite-plugin-meta-images";
+        ╵                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+failed to load config from /opt/render/project/src/vite.config.ts
+Error: Build failed with 1 error:
+vite.config.ts:6:33: ERROR: Could not resolve "./vite-plugin-meta-images"
+    at failureErrorWithLog (/opt/render/project/src/node_modules/esbuild/lib/main.js:1467:15)
+    at /opt/render/project/src/node_modules/esbuild/lib/main.js:926:25
+    at runOnEndCallbacks (/opt/render/project/src/node_modules/esbuild/lib/main.js:1307:45)
+    at buildResponseToResult (/opt/render/project/src/node_modules/esbuild/lib/main.js:924:7)
+    at /opt/render/project/src/node_modules/esbuild/lib/main.js:951:16
+    at responseCallbacks.<computed> (/opt/render/project/src/node_modules/esbuild/lib/main.js:603:9)
+    at handleIncomingPacket (/opt/render/project/src/node_modules/esbuild/lib/main.js:658:12)
+    at Socket.readFromStdout (/opt/render/project/src/node_modules/esbuild/lib/main.js:581:7)
+    at Socket.emit (node:events:518:28)
+    at addChunk (node:internal/streams/readable:561:12) {
+  errors: [Getter/Setter],
+  warnings: [Getter/Setter]
+}
+==> Build failed 😞
+==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys

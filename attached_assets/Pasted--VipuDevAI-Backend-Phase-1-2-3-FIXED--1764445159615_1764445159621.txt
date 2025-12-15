@@ -1,0 +1,597 @@
+// ===============================
+// VipuDevAI Backend (Phase 1 + 2 + 3) – FIXED
+// ===============================
+// Features:
+// - AI chat (OpenAI chat.completions, "no I can't" behaviour)
+// - Neon PostgreSQL memory across sessions
+// - Single-file code runner (JS / Python) on host
+// - ZIP create from active code
+// - ZIP analyze with AI review
+// - Multi-file project run via Docker (advanced sandbox, resource-limited)
+// - Project save to Neon DB (auto/manual)
+// - Deploy guidance endpoint (Vercel/Render/Railway)
+// - DALL·E image generation (dall-e-3)
+// ===============================
+
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import OpenAI from "openai";
+import { exec, spawn } from "child_process";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import os from "os";
+import multer from "multer";
+import AdmZip from "adm-zip";
+import pkg from "pg";
+
+dotenv.config();
+
+const { Pool } = pkg;
+
+// ---------- DB (Neon) ----------
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL
+});
+
+// ---------- Paths / Express ----------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const port = process.env.PORT || 5000;
+
+app.use(cors());
+app.use(express.json({ limit: "8mb" }));
+
+// ---------- Simple API key auth ----------
+const VIPU_KEY = process.env.VIPU_KEY || "";
+
+app.use((req, res, next) => {
+  if (!VIPU_KEY || req.method === "OPTIONS") return next();
+  const headerKey = req.headers["x-vipu-key"];
+  if (headerKey !== VIPU_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+});
+
+// ---------- File uploads (ZIP) ----------
+const upload = multer({
+  dest: path.join(os.tmpdir(), "vipu-uploads")
+});
+
+// ---------- OpenAI client ----------
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+
+// ---------- System prompt ----------
+const systemPrompt = `
+You are VipuDevAI, a highly advanced, super-powered AI developer assistant for Balaji.
+
+🌟 CORE BEHAVIOUR RULES:
+- You NEVER respond saying "I can't", "I don't know", "I am unsure", or similar negative/uncertain phrases.
+- If anything is unclear or information is missing:
+  1. Infer the most likely assumption.
+  2. Briefly state that assumption.
+  3. Then continue solving the problem confidently.
+- You follow a strict "ALWAYS PROVIDE A SOLUTION" approach.
+- You act like a proactive senior full-stack developer + tech lead + architect + debugging expert.
+- You never stall development. You always offer:
+  ✓ A best-guess solution
+  ✓ A workaround
+  ✓ Full working example code
+  ✓ Clear next steps.
+
+🧠 RESPONSE STYLE:
+- Confident, structured, direct.
+- Use headings, bullet points, and full working code blocks.
+- Avoid vague language; be concrete and actionable.
+
+📦 ZIP & PROJECT REVIEW:
+- When given a project (files/ZIP), explain structure, tech stack, logic flow.
+- Identify potential bugs, smells, performance and security issues.
+- Suggest improvements and architecture refinements.
+
+🛠 GENERAL SKILLS:
+- Expert in JavaScript, TypeScript, Node.js, Python, SQL, HTML/CSS, backend APIs and common frameworks.
+- Can design, refactor, debug and scale full-stack apps (e.g., SmartGenEduX-style ERPs).
+
+⚠️ NEVER SAY:
+"I don't know", "I can't", "Not possible", "Try later", or weak disclaimers.
+
+🏁 MAIN GOAL:
+Always move Balaji's development forward with practical, high-quality solutions. No excuses — only solutions.
+`;
+
+// ---------- Memory / projects tables ----------
+async function ensureMemoryTables() {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS vipudevai_memory (
+        id SERIAL PRIMARY KEY,
+        key TEXT,
+        value TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS vipudevai_projects (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        files JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+  } catch (err) {
+    console.error("Error ensuring tables:", err.message);
+  }
+}
+
+async function getMemory() {
+  try {
+    const res = await db.query(
+      "SELECT key, value FROM vipudevai_memory ORDER BY created_at DESC LIMIT 15"
+    );
+    return res.rows.map(r => `${r.key}: ${r.value}`).join("\n");
+  } catch (err) {
+    console.error("Fetching memory failed:", err.message);
+    return "";
+  }
+}
+
+async function saveMemory(key, value) {
+  try {
+    await db.query(
+      "INSERT INTO vipudevai_memory (key, value) VALUES ($1, $2)",
+      [key, value]
+    );
+  } catch (err) {
+    console.error("Memory save failed:", err.message);
+  }
+}
+
+// ---------- Core AI call (chat.completions) ----------
+async function callVipuDevAI(messages, codeContext) {
+  const memoryData = await getMemory();
+
+  const fullSystem = `${systemPrompt}
+
+🧠 MEMORY:
+${memoryData || "(no stored memory yet)"}`;
+
+  const inputMessages = [
+    { role: "system", content: fullSystem },
+    ...(codeContext
+      ? [{ role: "user", content: `Code context:\n${codeContext}` }]
+      : []),
+    ...messages
+  ];
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: inputMessages,
+    temperature: 0.1,
+    max_tokens: 4000
+  });
+
+  const reply = response.choices[0]?.message?.content || "";
+
+  if (reply && reply.length > 40) {
+    await saveMemory("assistant_summary", reply.slice(0, 300));
+  }
+
+  return reply;
+}
+
+// ===============================
+// 1) Chat
+// ===============================
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { messages, codeContext } = req.body;
+
+    const reply = await callVipuDevAI(messages || [], codeContext || "");
+
+    const lastUserMsg = messages?.slice(-1)[0]?.content || "";
+    if (lastUserMsg) {
+      await saveMemory("last_user_query", lastUserMsg.slice(0, 300));
+    }
+
+    res.json({ reply });
+  } catch (err) {
+    console.error("Chat error:", err);
+    res.status(500).json({ error: "Chat processing failed in backend" });
+  }
+});
+
+// ===============================
+// 2) Single-file code runner (host)
+// ===============================
+app.post("/api/run", async (req, res) => {
+  const { code, language } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ error: "Code is required" });
+  }
+
+  const lang = language || "javascript";
+  const ext = lang === "python" ? ".py" : ".js";
+  const cmd = lang === "python" ? "python3" : "node";
+
+  try {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vipu-run-"));
+    const filePath = path.join(tempDir, "main" + ext);
+    fs.writeFileSync(filePath, code);
+
+    exec(
+      `${cmd} "${filePath}"`,
+      { timeout: 7000, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const result = {
+          stdout,
+          stderr,
+          exitCode: error?.code || 0,
+          timedOut: !!error?.killed
+        };
+
+        try {
+          fs.unlinkSync(filePath);
+          fs.rmdirSync(tempDir);
+        } catch (_) {}
+
+        res.json(result);
+      }
+    );
+  } catch (err) {
+    console.error("Run error:", err);
+    res.status(500).json({ error: "Execution failed on backend" });
+  }
+});
+
+// ===============================
+// 3) ZIP from code (active file)
+// ===============================
+app.post("/api/zip-code", (req, res) => {
+  const { code, language, filename } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ error: "Code is required" });
+  }
+
+  const ext =
+    (filename && filename.split(".").pop()) ||
+    (language === "python" ? "py" : "js");
+  const safeName =
+    (filename && filename.replace(/[^\w.\-]/g, "")) || `main.${ext}`;
+
+  try {
+    const zip = new AdmZip();
+    zip.addFile(safeName, Buffer.from(code, "utf8"));
+
+    const buffer = zip.toBuffer();
+
+    res.set({
+      "Content-Type": "application/zip",
+      "Content-Disposition": 'attachment; filename="vipudevai-project.zip"',
+      "Content-Length": buffer.length
+    });
+
+    res.send(buffer);
+  } catch (err) {
+    console.error("ZIP creation error:", err);
+    res.status(500).json({ error: "Failed to create ZIP" });
+  }
+});
+
+// ===============================
+// 4) Analyze ZIP project
+// ===============================
+app.post("/api/analyze-zip", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "ZIP file is required" });
+  }
+
+  const zipPath = req.file.path;
+
+  try {
+    const zip = new AdmZip(zipPath);
+    const entries = zip.getEntries();
+
+    const MAX_FILES = 30;
+    const MAX_BYTES = 20000;
+
+    const samples = [];
+    for (const entry of entries) {
+      if (samples.length >= MAX_FILES) break;
+      if (entry.isDirectory) continue;
+
+      const name = entry.entryName;
+
+      if (/\.(png|jpg|jpeg|gif|ico|pdf|mp4|mp3|zip|gz|tar|exe|dll)$/i.test(name)) {
+        continue;
+      }
+
+      const data = entry.getData();
+      if (!data || !data.length) continue;
+
+      const content =
+        data.length > MAX_BYTES
+          ? data.slice(0, MAX_BYTES).toString("utf8")
+          : data.toString("utf8");
+
+      samples.push(`--- FILE: ${name} ---\n${content}`);
+    }
+
+    const combined = samples.join("\n\n");
+
+    const messages = [
+      {
+        role: "user",
+        content:
+          "I uploaded a ZIP project. Analyze its structure, tech stack, potential bugs, and suggest improvements and refactors."
+      },
+      {
+        role: "user",
+        content: combined || "(no readable text files found)"
+      }
+    ];
+
+    const analysis = await callVipuDevAI(messages, "");
+    await saveMemory("last_zip_analysis", "A project ZIP was analyzed");
+
+    res.json({
+      analysis,
+      sampledFiles: samples.length
+    });
+  } catch (err) {
+    console.error("Analyze ZIP error:", err);
+    res.status(500).json({ error: "Failed to analyze ZIP" });
+  } finally {
+    try {
+      fs.unlinkSync(zipPath);
+    } catch (_) {}
+  }
+});
+
+// ===============================
+// 5) Advanced sandbox: multi-file project via Docker
+// ===============================
+// Request body example:
+// {
+//   "files": [{ "path": "main.js", "content": "console.log('hi')" }],
+//   "language": "node",           // "node" or "python"
+//   "command": "node main.js"     // optional overrides
+// }
+app.post("/api/run-project", async (req, res) => {
+  const { files, language, command } = req.body;
+
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: "files array is required" });
+  }
+
+  const lang = (language || "node").toLowerCase();
+  let image;
+  let defaultCmd;
+
+  if (lang === "python") {
+    image = "python:3.11";
+    defaultCmd = "python main.py";
+  } else {
+    image = "node:18";
+    defaultCmd = "node main.js";
+  }
+
+  const runCmd = command || defaultCmd;
+
+  let tempDir;
+  try {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "vipu-project-"));
+
+    // Write all files
+    for (const file of files) {
+      const relPath = (file.path || "").replace(/^[/\\]+/, "");
+      const targetPath = path.join(tempDir, relPath || "main.js");
+      const dirName = path.dirname(targetPath);
+      fs.mkdirSync(dirName, { recursive: true });
+      fs.writeFileSync(targetPath, file.content ?? "", "utf8");
+    }
+
+    // 🔐 Hardened Docker arguments (no network, memory/CPU limits)
+    const dockerArgs = [
+      "run",
+      "--rm",
+      "--network", "none",   // no internet
+      "--memory", "512m",    // memory limit
+      "--cpus", "1",         // CPU limit
+      "-v", `${tempDir}:/app`,
+      "-w", "/app",
+      image,
+      "bash",
+      "-lc",
+      runCmd
+    ];
+
+    let stdout = "";
+    let stderr = "";
+
+    // ✅ Spawn without built-in timeout, control via setTimeout
+    const child = spawn("docker", dockerArgs);
+    const timeoutId = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch (_) {}
+      stderr += "\n[Process killed due to timeout]";
+    }, 20000); // 20 seconds
+
+    child.stdout.on("data", data => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", data => {
+      stderr += data.toString();
+    });
+
+    child.on("close", code => {
+      clearTimeout(timeoutId);
+
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (_) {}
+
+      res.json({
+        stdout,
+        stderr,
+        exitCode: code,
+        imageUsed: image,
+        commandRun: runCmd
+      });
+    });
+  } catch (err) {
+    console.error("Run-project error:", err);
+    if (tempDir) {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (_) {}
+    }
+    res.status(500).json({
+      error:
+        "Failed to run project in Docker. Ensure Docker is installed and accessible."
+    });
+  }
+});
+
+// ===============================
+// 6) Save project to Neon DB
+// ===============================
+app.post("/api/save-project", async (req, res) => {
+  const { projectId, projectName, files } = req.body;
+  if (!files) {
+    return res.status(400).json({ error: "files are required" });
+  }
+
+  const name = projectName || "Untitled Project";
+
+  try {
+    if (projectId) {
+      await db.query(
+        "UPDATE vipudevai_projects SET name = $2, files = $3, updated_at = NOW() WHERE id = $1",
+        [projectId, name, JSON.stringify(files)]
+      );
+      return res.json({ success: true, projectId });
+    } else {
+      const result = await db.query(
+        "INSERT INTO vipudevai_projects (name, files) VALUES ($1, $2) RETURNING id",
+        [name, JSON.stringify(files)]
+      );
+      return res.json({ success: true, projectId: result.rows[0].id });
+    }
+  } catch (err) {
+    console.error("Save project error:", err);
+    return res.status(500).json({ error: "Failed to save project" });
+  }
+});
+
+app.get("/api/projects", async (req, res) => {
+  try {
+    const result = await db.query(
+      "SELECT id, name, created_at, updated_at FROM vipudevai_projects ORDER BY updated_at DESC LIMIT 20"
+    );
+    res.json({ projects: result.rows });
+  } catch (err) {
+    console.error("List projects error:", err);
+    res.status(500).json({ error: "Failed to list projects" });
+  }
+});
+
+// ===============================
+// 7) Deploy stub endpoint
+// ===============================
+app.post("/api/deploy", async (req, res) => {
+  const { platform } = req.body;
+  if (!platform) {
+    return res.status(400).json({ error: "platform is required" });
+  }
+
+  const p = platform.toLowerCase();
+  let logs = "";
+
+  if (p === "vercel") {
+    logs = `
+To deploy manually to Vercel:
+1) Install CLI: npm i -g vercel
+2) Run: vercel && vercel --prod
+3) Make sure your frontend and backend are configured.
+`;
+  } else if (p === "render") {
+    logs = `
+To deploy to Render:
+1) Push code to GitHub.
+2) Create a new Web Service on Render and connect the repo.
+3) Set build command: npm install && npm run build
+4) Start command: node server/index.js
+`;
+  } else if (p === "railway") {
+    logs = `
+To deploy to Railway:
+1) Install Railway CLI: npm i -g @railway/cli
+2) railway login
+3) railway init
+4) railway up
+`;
+  } else {
+    logs = "Unknown platform. Use vercel | render | railway.";
+  }
+
+  res.json({ success: true, logs });
+});
+
+// ===============================
+// 8) DALL·E Image generation (fixed model)
+// ===============================
+app.post("/api/generate-image", async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) {
+    return res.status(400).json({ error: "prompt is required" });
+  }
+
+  try {
+    const response = await openai.images.generate({
+      model: "dall-e-3",   // ✅ FIXED MODEL NAME
+      prompt,
+      size: "1024x1024",
+      n: 1
+    });
+
+    const url = response.data[0]?.url;
+    res.json({ url });
+  } catch (err) {
+    console.error("Image generation error:", err);
+    res.status(500).json({ error: "Image generation failed" });
+  }
+});
+
+// ===============================
+// Start server
+// ===============================
+app.listen(port, async () => {
+  console.log(`⚡ VipuDevAI backend (Phase 1+2+3, fixed) running at http://localhost:${port}`);
+
+  try {
+    await ensureMemoryTables();
+    console.log("🟢 Tables ensured");
+    const client = await db.connect();
+    console.log("🟢 Connected to Neon DB");
+    client.release();
+  } catch (err) {
+    console.error("🔴 Neon DB connection issue:", err.message);
+  }
+
+  console.log("💡 Docker sandbox: /api/run-project (no network, 512MB, 1 CPU, 20s timeout)");
+  console.log("💡 Project save:   /api/save-project");
+  console.log("💡 Deploy stub:    /api/deploy");
+  console.log("💡 DALL·E images:  /api/generate-image (dall-e-3)");
+});
