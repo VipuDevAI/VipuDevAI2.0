@@ -133,16 +133,22 @@ You MUST output files in this EXACT format. Each file MUST start with "FILE:" on
 FILE: package.json
 \`\`\`json
 {
-  "name": "project-name",
+  "name": "school-management-api",
   "version": "1.0.0",
-  ...
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:push": "drizzle-kit push"
+  },
+  "dependencies": { "express": "^4.18.2", ... }
 }
 \`\`\`
 
 FILE: .env.example
 \`\`\`
-DATABASE_URL=postgresql://...
-SECRET_KEY=your-secret-key
+DATABASE_URL=postgresql://user:password@host/database
+JWT_SECRET=generate-a-64-char-random-string-here
 \`\`\`
 
 FILE: src/index.ts
@@ -154,7 +160,21 @@ import express from 'express';
 🏗️ WHAT YOU GENERATE FOR EVERY PROJECT:
 
 1. **Project Configuration**
-   - package.json with all dependencies
+   - package.json with REAL values (NEVER use placeholders like "your-project-name" or "your-build-command"):
+     \`\`\`json
+     {
+       "name": "actual-project-name-based-on-user-request",
+       "version": "1.0.0",
+       "scripts": {
+         "dev": "tsx watch src/index.ts",
+         "build": "tsc",
+         "start": "node dist/index.js",
+         "db:push": "drizzle-kit push"
+       },
+       "dependencies": { ... actual deps ... },
+       "devDependencies": { ... actual dev deps ... }
+     }
+     \`\`\`
    - tsconfig.json / jsconfig.json
    - .env.example with all required variables
    - .gitignore
@@ -188,11 +208,11 @@ import express from 'express';
    - Include clear instructions in README for creating free Neon database at neon.tech
 
 6. **Deployment Files**
-   - render.yaml - MUST use this EXACT format for env vars:
+   - render.yaml - MUST use this EXACT format for env vars (replace project-name with actual name like "school-api"):
      \`\`\`yaml
      services:
        - type: web
-         name: app-name
+         name: school-management-api
          runtime: node
          buildCommand: npm install && npm run build
          startCommand: npm start
@@ -205,7 +225,7 @@ import express from 'express';
              sync: false
          healthCheckPath: /api/health
      \`\`\`
-     IMPORTANT: Use "sync: false" for secrets, NEVER use "fromDatabase"
+     IMPORTANT: Use "sync: false" for secrets, NEVER use "fromDatabase" or placeholder names
    - vercel.json (if frontend-only)
    - railway.toml (if needed)
    - README.md with COMPLETE deployment instructions
@@ -218,7 +238,12 @@ import express from 'express';
 5. ALWAYS use TypeScript when possible
 6. ALWAYS include comments in complex logic
 7. ALWAYS generate a complete folder structure
-8. ALWAYS include a README with:
+8. ⚠️ CRITICAL: NEVER use placeholder values like "your-project-name", "your-build-command", "your-app", "your-secret" etc.
+   - Generate REAL project names based on user's request (e.g., "school-management-system", "ecommerce-api")
+   - Generate REAL build commands (e.g., "tsc", "npm run build", "vite build")
+   - Generate REAL start commands (e.g., "node dist/index.js", "npm run start")
+   - Generate REAL dependencies with actual version numbers
+9. ALWAYS include a README with:
    - Project overview
    - Tech stack
    - Setup instructions (npm install, env setup)
