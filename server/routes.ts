@@ -188,10 +188,26 @@ import express from 'express';
    - Include clear instructions in README for creating free Neon database at neon.tech
 
 6. **Deployment Files**
-   - render.yaml with DATABASE_URL env var placeholder
+   - render.yaml - MUST use this EXACT format for env vars:
+     \`\`\`yaml
+     services:
+       - type: web
+         name: app-name
+         runtime: node
+         buildCommand: npm install && npm run build
+         startCommand: npm start
+         envVars:
+           - key: NODE_ENV
+             value: production
+           - key: DATABASE_URL
+             sync: false
+           - key: JWT_SECRET
+             sync: false
+         healthCheckPath: /api/health
+     \`\`\`
+     IMPORTANT: Use "sync: false" for secrets, NEVER use "fromDatabase"
    - vercel.json (if frontend-only)
    - railway.toml (if needed)
-   - Dockerfile (if needed)
    - README.md with COMPLETE deployment instructions
 
 🎯 RULES:
