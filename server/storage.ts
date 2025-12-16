@@ -11,12 +11,24 @@ import {
   type InsertCodeExecution,
   type UserConfig,
   type InsertUserConfig,
+  type ProjectSnapshot,
+  type InsertProjectSnapshot,
+  type BuilderRun,
+  type InsertBuilderRun,
+  type DebugSession,
+  type InsertDebugSession,
+  type DeploymentRecord,
+  type InsertDeploymentRecord,
   users,
   projects,
   chatThreads,
   chatMessages,
   codeExecutions,
-  userConfig
+  userConfig,
+  projectSnapshots,
+  builderRuns,
+  debugSessions,
+  deploymentRecords
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, isNull, and } from "drizzle-orm";
@@ -55,6 +67,29 @@ export interface IStorage {
   // Config operations
   getConfig(): Promise<UserConfig | undefined>;
   updateConfig(config: InsertUserConfig): Promise<UserConfig>;
+
+  // Project snapshot operations
+  getProjectSnapshots(projectId: string): Promise<ProjectSnapshot[]>;
+  getSnapshot(id: number): Promise<ProjectSnapshot | undefined>;
+  createSnapshot(snapshot: InsertProjectSnapshot): Promise<ProjectSnapshot>;
+
+  // Builder run operations
+  getBuilderRuns(projectId?: string): Promise<BuilderRun[]>;
+  getBuilderRun(id: number): Promise<BuilderRun | undefined>;
+  createBuilderRun(run: InsertBuilderRun): Promise<BuilderRun>;
+  updateBuilderRun(id: number, run: Partial<InsertBuilderRun>): Promise<BuilderRun | undefined>;
+
+  // Debug session operations
+  getDebugSessions(projectId: string): Promise<DebugSession[]>;
+  getDebugSession(id: number): Promise<DebugSession | undefined>;
+  createDebugSession(session: InsertDebugSession): Promise<DebugSession>;
+  updateDebugSession(id: number, session: Partial<InsertDebugSession>): Promise<DebugSession | undefined>;
+
+  // Deployment record operations
+  getDeployments(projectId: string): Promise<DeploymentRecord[]>;
+  getDeployment(id: number): Promise<DeploymentRecord | undefined>;
+  createDeployment(deployment: InsertDeploymentRecord): Promise<DeploymentRecord>;
+  updateDeployment(id: number, deployment: Partial<InsertDeploymentRecord>): Promise<DeploymentRecord | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -200,6 +235,84 @@ export class DatabaseStorage implements IStorage {
       const [created] = await db.insert(userConfig).values(config).returning();
       return created;
     }
+  }
+
+  // Project snapshot operations
+  async getProjectSnapshots(projectId: string): Promise<ProjectSnapshot[]> {
+    return db.select().from(projectSnapshots).where(eq(projectSnapshots.projectId, projectId)).orderBy(desc(projectSnapshots.createdAt));
+  }
+
+  async getSnapshot(id: number): Promise<ProjectSnapshot | undefined> {
+    const [snapshot] = await db.select().from(projectSnapshots).where(eq(projectSnapshots.id, id)).limit(1);
+    return snapshot;
+  }
+
+  async createSnapshot(snapshot: InsertProjectSnapshot): Promise<ProjectSnapshot> {
+    const [newSnapshot] = await db.insert(projectSnapshots).values(snapshot).returning();
+    return newSnapshot;
+  }
+
+  // Builder run operations
+  async getBuilderRuns(projectId?: string): Promise<BuilderRun[]> {
+    if (projectId) {
+      return db.select().from(builderRuns).where(eq(builderRuns.projectId, projectId)).orderBy(desc(builderRuns.createdAt));
+    }
+    return db.select().from(builderRuns).orderBy(desc(builderRuns.createdAt));
+  }
+
+  async getBuilderRun(id: number): Promise<BuilderRun | undefined> {
+    const [run] = await db.select().from(builderRuns).where(eq(builderRuns.id, id)).limit(1);
+    return run;
+  }
+
+  async createBuilderRun(run: InsertBuilderRun): Promise<BuilderRun> {
+    const [newRun] = await db.insert(builderRuns).values(run).returning();
+    return newRun;
+  }
+
+  async updateBuilderRun(id: number, run: Partial<InsertBuilderRun>): Promise<BuilderRun | undefined> {
+    const [updated] = await db.update(builderRuns).set({ ...run, updatedAt: sql`NOW()` }).where(eq(builderRuns.id, id)).returning();
+    return updated;
+  }
+
+  // Debug session operations
+  async getDebugSessions(projectId: string): Promise<DebugSession[]> {
+    return db.select().from(debugSessions).where(eq(debugSessions.projectId, projectId)).orderBy(desc(debugSessions.createdAt));
+  }
+
+  async getDebugSession(id: number): Promise<DebugSession | undefined> {
+    const [session] = await db.select().from(debugSessions).where(eq(debugSessions.id, id)).limit(1);
+    return session;
+  }
+
+  async createDebugSession(session: InsertDebugSession): Promise<DebugSession> {
+    const [newSession] = await db.insert(debugSessions).values(session).returning();
+    return newSession;
+  }
+
+  async updateDebugSession(id: number, session: Partial<InsertDebugSession>): Promise<DebugSession | undefined> {
+    const [updated] = await db.update(debugSessions).set({ ...session, updatedAt: sql`NOW()` }).where(eq(debugSessions.id, id)).returning();
+    return updated;
+  }
+
+  // Deployment record operations
+  async getDeployments(projectId: string): Promise<DeploymentRecord[]> {
+    return db.select().from(deploymentRecords).where(eq(deploymentRecords.projectId, projectId)).orderBy(desc(deploymentRecords.createdAt));
+  }
+
+  async getDeployment(id: number): Promise<DeploymentRecord | undefined> {
+    const [deployment] = await db.select().from(deploymentRecords).where(eq(deploymentRecords.id, id)).limit(1);
+    return deployment;
+  }
+
+  async createDeployment(deployment: InsertDeploymentRecord): Promise<DeploymentRecord> {
+    const [newDeployment] = await db.insert(deploymentRecords).values(deployment).returning();
+    return newDeployment;
+  }
+
+  async updateDeployment(id: number, deployment: Partial<InsertDeploymentRecord>): Promise<DeploymentRecord | undefined> {
+    const [updated] = await db.update(deploymentRecords).set({ ...deployment, updatedAt: sql`NOW()` }).where(eq(deploymentRecords.id, id)).returning();
+    return updated;
   }
 }
 

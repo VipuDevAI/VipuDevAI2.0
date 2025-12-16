@@ -110,3 +110,90 @@ export const insertUserConfigSchema = createInsertSchema(userConfig).omit({
 
 export type InsertUserConfig = z.infer<typeof insertUserConfigSchema>;
 export type UserConfig = typeof userConfig.$inferSelect;
+
+// Project snapshots table - stores versioned copies of project files
+export const projectSnapshots = pgTable("project_snapshots", {
+  id: serial("id").primaryKey(),
+  projectId: varchar("project_id").notNull(),
+  label: text("label").notNull().default("v1"),
+  files: jsonb("files").notNull().default([]),
+  summary: text("summary"),
+  prompt: text("prompt"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertProjectSnapshotSchema = createInsertSchema(projectSnapshots).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertProjectSnapshot = z.infer<typeof insertProjectSnapshotSchema>;
+export type ProjectSnapshot = typeof projectSnapshots.$inferSelect;
+
+// Builder runs table - tracks all AI interactions (generate, debug, deploy)
+export const builderRuns = pgTable("builder_runs", {
+  id: serial("id").primaryKey(),
+  projectId: varchar("project_id"),
+  snapshotId: integer("snapshot_id"),
+  type: text("type").notNull().default("generation"),
+  status: text("status").notNull().default("pending"),
+  prompt: text("prompt"),
+  aiResponse: text("ai_response"),
+  diff: jsonb("diff"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertBuilderRunSchema = createInsertSchema(builderRuns).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertBuilderRun = z.infer<typeof insertBuilderRunSchema>;
+export type BuilderRun = typeof builderRuns.$inferSelect;
+
+// Debug sessions table - tracks debugging workflows
+export const debugSessions = pgTable("debug_sessions", {
+  id: serial("id").primaryKey(),
+  projectId: varchar("project_id").notNull(),
+  snapshotId: integer("snapshot_id"),
+  errorLog: text("error_log").notNull(),
+  analysis: text("analysis"),
+  fixedFiles: jsonb("fixed_files"),
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertDebugSessionSchema = createInsertSchema(debugSessions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertDebugSession = z.infer<typeof insertDebugSessionSchema>;
+export type DebugSession = typeof debugSessions.$inferSelect;
+
+// Deployment records table - tracks deployment attempts
+export const deploymentRecords = pgTable("deployment_records", {
+  id: serial("id").primaryKey(),
+  projectId: varchar("project_id").notNull(),
+  snapshotId: integer("snapshot_id"),
+  platform: text("platform").notNull(),
+  status: text("status").notNull().default("pending"),
+  config: jsonb("config"),
+  deployUrl: text("deploy_url"),
+  logs: text("logs"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertDeploymentRecordSchema = createInsertSchema(deploymentRecords).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertDeploymentRecord = z.infer<typeof insertDeploymentRecordSchema>;
+export type DeploymentRecord = typeof deploymentRecords.$inferSelect;

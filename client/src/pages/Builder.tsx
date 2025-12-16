@@ -43,6 +43,15 @@ import {
   PanelRightClose,
   Paperclip,
   Plus,
+  Bug,
+  Cloud,
+  Upload,
+  AlertTriangle,
+  Wrench,
+  RefreshCw,
+  ExternalLink,
+  History,
+  Play,
 } from "lucide-react";
 
 interface ChatMessage {
@@ -70,6 +79,57 @@ interface BuildResponse {
   model: string;
   prompt: string;
 }
+
+interface DebugResult {
+  analysis: string;
+  rootCause: string;
+  fixes: Array<{
+    file: string;
+    description: string;
+    originalCode: string;
+    fixedCode: string;
+  }>;
+  additionalSteps: string[];
+  preventionTips: string[];
+}
+
+interface DeploymentConfig {
+  filename: string;
+  content: string;
+}
+
+interface Project {
+  id: string;
+  name: string;
+  description: string;
+  files: any[];
+}
+
+interface GitHubUser {
+  login: string;
+  name: string;
+  avatar_url: string;
+  html_url: string;
+}
+
+interface GitHubRepo {
+  name: string;
+  full_name: string;
+  html_url: string;
+  description: string;
+  private: boolean;
+  default_branch: string;
+}
+
+interface DeployInstructions {
+  platform: string;
+  steps: string[];
+  configFile: string;
+  configContent: string;
+  deployUrl: string;
+}
+
+type MainTab = "generate" | "debug" | "deploy";
 
 const PROJECT_TEMPLATES = [
   { id: "custom", label: "Custom Project", icon: Rocket, color: "from-lime-500 to-green-500", description: "Build anything you imagine" },
@@ -111,11 +171,20 @@ const FEATURE_CHIPS = [
   "Email Notifications",
 ];
 
+const DATABASE_PROVIDERS = [
+  { id: "neon", label: "Neon PostgreSQL", description: "Serverless Postgres with Drizzle ORM (Recommended)" },
+  { id: "supabase", label: "Supabase", description: "Postgres + Auth + Realtime" },
+  { id: "planetscale", label: "PlanetScale", description: "Serverless MySQL with Prisma" },
+  { id: "mongodb", label: "MongoDB Atlas", description: "NoSQL document database with Mongoose" },
+  { id: "none", label: "No Database", description: "Frontend only / Mock data" },
+];
+
 export default function Builder() {
   const [currentStep, setCurrentStep] = useState(1);
   const [prompt, setPrompt] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState("custom");
   const [techStack, setTechStack] = useState("default");
+  const [databaseProvider, setDatabaseProvider] = useState("neon");
   const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState(() => {
     if (typeof window !== "undefined") {
@@ -123,7 +192,19 @@ export default function Builder() {
     }
     return "";
   });
-  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
+  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("vipudev_generated_files");
+      return saved ? JSON.parse(saved) : [];
+    }
+    return [];
+  });
+  const [generatedProjectName, setGeneratedProjectName] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("vipudev_project_name") || "";
+    }
+    return "";
+  });
   const [selectedFile, setSelectedFile] = useState<GeneratedFile | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
@@ -137,6 +218,29 @@ export default function Builder() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
+
+  // Main tab navigation
+  const [mainTab, setMainTab] = useState<MainTab>("generate");
+
+  // Debug Mode state
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const [errorLog, setErrorLog] = useState("");
+  const [debugResult, setDebugResult] = useState<DebugResult | null>(null);
+
+  // Deployment Center state
+  const [deployPlatform, setDeployPlatform] = useState<string>("render");
+  const [deployConfig, setDeployConfig] = useState<DeploymentConfig | null>(null);
+  const [deployError, setDeployError] = useState("");
+  const [showDeployDebug, setShowDeployDebug] = useState(false);
+
+  // GitHub Integration state
+  const [showGitHubModal, setShowGitHubModal] = useState(false);
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoDescription, setNewRepoDescription] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(false);
+  const [selectedRepo, setSelectedRepo] = useState<string>("");
+  const [deployInstructions, setDeployInstructions] = useState<DeployInstructions | null>(null);
+  const [pushedRepoUrl, setPushedRepoUrl] = useState("");
 
   // Fetch builder threads
   const { data: threadsData } = useQuery({
@@ -362,6 +466,19 @@ Be concise but helpful. Suggest improvements to their description.`;
     };
   }, [apiKey]);
 
+  // Persist generated files and project name to localStorage
+  useEffect(() => {
+    if (generatedFiles.length > 0) {
+      localStorage.setItem("vipudev_generated_files", JSON.stringify(generatedFiles));
+    }
+  }, [generatedFiles]);
+
+  useEffect(() => {
+    if (generatedProjectName) {
+      localStorage.setItem("vipudev_project_name", generatedProjectName);
+    }
+  }, [generatedProjectName]);
+
   const toggleFeature = (feature: string) => {
     setSelectedFeatures(prev =>
       prev.includes(feature) ? prev.filter(f => f !== feature) : [...prev, feature]
@@ -384,6 +501,7 @@ Be concise but helpful. Suggest improvements to their description.`;
         body: JSON.stringify({
           prompt: templatePrompt + prompt + featuresPrompt,
           techStack: techStack !== "default" ? techStack : undefined,
+          databaseProvider: databaseProvider,
           apiKey: apiKey || undefined,
         }),
       });
@@ -398,6 +516,8 @@ Be concise but helpful. Suggest improvements to their description.`;
     onSuccess: (data) => {
       setGeneratedFiles(data.files);
       setRawResponse(data.rawResponse);
+      const projectName = prompt.slice(0, 30).replace(/[^\w\s]/g, "").replace(/\s+/g, "-") || "vipudev-project";
+      setGeneratedProjectName(projectName);
       if (data.files.length > 0) {
         setSelectedFile(data.files[0]);
         const folders = new Set<string>();
@@ -447,6 +567,298 @@ Be concise but helpful. Suggest improvements to their description.`;
     },
     onError: () => {
       toast.error("Download failed");
+    },
+  });
+
+  // Fetch all projects for Debug Mode & Deployment Center
+  const { data: projectsData } = useQuery({
+    queryKey: ["projects"],
+    queryFn: async () => {
+      const res = await fetch("/api/projects");
+      return res.json();
+    },
+  });
+
+  const availableProjects: Project[] = projectsData?.projects || [];
+
+  // Debug Mode mutation
+  const debugMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/debug/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: selectedProjectId,
+          errorLog,
+          apiKey: apiKey || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Debug analysis failed");
+      }
+
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setDebugResult(data.result);
+      toast.success("Debug analysis complete!");
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Debug analysis failed");
+    },
+  });
+
+  // Deployment config generation mutation
+  const generateConfigMutation = useMutation({
+    mutationFn: async () => {
+      const project = availableProjects.find(p => p.id === selectedProjectId);
+      const res = await fetch("/api/deployments/generate-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: selectedProjectId,
+          platform: deployPlatform,
+          projectName: project?.name || "my-app",
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Config generation failed");
+      }
+
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setDeployConfig(data.config);
+      toast.success(`${deployPlatform} config generated!`);
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Config generation failed");
+    },
+  });
+
+  // GitHub queries
+  const { data: githubStatus } = useQuery({
+    queryKey: ["github-status"],
+    queryFn: async () => {
+      const res = await fetch("/api/github/status");
+      return res.json();
+    },
+  });
+
+  const { data: githubUser } = useQuery({
+    queryKey: ["github-user"],
+    queryFn: async () => {
+      const res = await fetch("/api/github/user");
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!githubStatus?.connected,
+  });
+
+  const { data: githubRepos } = useQuery({
+    queryKey: ["github-repos"],
+    queryFn: async () => {
+      const res = await fetch("/api/github/repos");
+      return res.json();
+    },
+    enabled: !!githubStatus?.connected,
+  });
+
+  const reposList: GitHubRepo[] = githubRepos?.repos || [];
+
+  // Create GitHub repo mutation
+  const createRepoMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/github/create-repo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newRepoName,
+          description: newRepoDescription || `Created with VipuDevAI - ${prompt.slice(0, 50)}`,
+          isPrivate: newRepoPrivate,
+        }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to create repository");
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setSelectedRepo(data.repo.full_name);
+      queryClient.invalidateQueries({ queryKey: ["github-repos"] });
+      toast.success(`Repository "${data.repo.name}" created!`);
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Failed to create repository");
+    },
+  });
+
+  // Push to GitHub mutation
+  const pushToGitHubMutation = useMutation({
+    mutationFn: async () => {
+      const [owner, repo] = selectedRepo.split("/");
+      const res = await fetch("/api/github/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          owner,
+          repo,
+          files: generatedFiles.map(f => ({ path: f.path, content: f.content })),
+          message: `Add VipuDevAI generated project: ${prompt.slice(0, 50)}`,
+          branch: "main",
+        }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to push to GitHub");
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      const [owner, repo] = selectedRepo.split("/");
+      setLastPushedOwnerRepo({ owner, repo });
+      setPushedRepoUrl(data.repo_url);
+      toast.success(`Pushed ${data.files_pushed} files to GitHub!`);
+      setShowGitHubModal(false);
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Failed to push to GitHub");
+    },
+  });
+
+  // Get deployment instructions
+  const getDeployInstructionsMutation = useMutation({
+    mutationFn: async (platform: string) => {
+      const res = await fetch("/api/deploy/instructions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform,
+          repoUrl: pushedRepoUrl,
+          projectName: prompt.slice(0, 30).replace(/[^\w\s]/g, "").replace(/\s+/g, "-") || "vipudev-app",
+        }),
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setDeployInstructions(data);
+    },
+  });
+
+  // Deployment debug mutation
+  const deployDebugMutation = useMutation({
+    mutationFn: async (deploymentId: number) => {
+      const res = await fetch(`/api/deployments/${deploymentId}/debug`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          errorLog: deployError,
+          apiKey: apiKey || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Deployment debug failed");
+      }
+
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setDebugResult(data.result);
+      toast.success("Deployment issue analyzed!");
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Deployment debug failed");
+    },
+  });
+
+  // Edit code mutation - for edit & redeploy workflow
+  const [changeRequest, setChangeRequest] = useState("");
+  const [editingCode, setEditingCode] = useState(false);
+  const [lastPushedOwnerRepo, setLastPushedOwnerRepo] = useState<{owner: string, repo: string} | null>(null);
+
+  const editCodeMutation = useMutation({
+    mutationFn: async (request: string) => {
+      const res = await fetch("/api/edit-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: generatedFiles,
+          changeRequest: request,
+          apiKey: apiKey || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Code editing failed");
+      }
+
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.modifiedFiles && data.modifiedFiles.length > 0) {
+        // Merge modified files with existing ones
+        setGeneratedFiles(prev => {
+          const updated = [...prev];
+          data.modifiedFiles.forEach((modified: GeneratedFile) => {
+            const existingIndex = updated.findIndex(f => f.path === modified.path);
+            if (existingIndex >= 0) {
+              updated[existingIndex] = modified;
+            } else {
+              updated.push(modified);
+            }
+          });
+          return updated;
+        });
+        toast.success(`Updated ${data.modifiedFiles.length} file(s)!`);
+        setChangeRequest("");
+      } else {
+        toast.info("No files needed modification");
+      }
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Code editing failed");
+    },
+  });
+
+  // Push updates to GitHub (for edit & redeploy)
+  const updateGitHubMutation = useMutation({
+    mutationFn: async (files: GeneratedFile[]) => {
+      if (!lastPushedOwnerRepo) {
+        throw new Error("No repository to update. Push to GitHub first.");
+      }
+      
+      const res = await fetch("/api/github/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          owner: lastPushedOwnerRepo.owner,
+          repo: lastPushedOwnerRepo.repo,
+          files: files.map(f => ({ path: f.path, content: f.content })),
+          message: `Update: ${changeRequest.slice(0, 50)}${changeRequest.length > 50 ? "..." : ""}`,
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "GitHub update failed");
+      }
+
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast.success("Changes pushed to GitHub! Deployment will auto-update.");
+      window.open(data.commit.html_url, "_blank");
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "GitHub update failed");
     },
   });
 
@@ -513,23 +925,62 @@ Be concise but helpful. Suggest improvements to their description.`;
             </div>
           </div>
 
+          {/* Main Tab Navigation */}
+          <div className="flex items-center gap-1 bg-gray-800/50 p-1 rounded-xl">
+            <button
+              onClick={() => setMainTab("generate")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                mainTab === "generate"
+                  ? "bg-lime-500/20 text-lime-400 border border-lime-500/30"
+                  : "text-gray-400 hover:text-white hover:bg-white/5"
+              }`}
+              data-testid="tab-generate"
+            >
+              <Sparkles className="w-4 h-4" />
+              Generate
+            </button>
+            <button
+              onClick={() => setMainTab("debug")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                mainTab === "debug"
+                  ? "bg-orange-500/20 text-orange-400 border border-orange-500/30"
+                  : "text-gray-400 hover:text-white hover:bg-white/5"
+              }`}
+              data-testid="tab-debug"
+            >
+              <Bug className="w-4 h-4" />
+              Debug
+            </button>
+            <button
+              onClick={() => setMainTab("deploy")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                mainTab === "deploy"
+                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                  : "text-gray-400 hover:text-white hover:bg-white/5"
+              }`}
+              data-testid="tab-deploy"
+            >
+              <Cloud className="w-4 h-4" />
+              Deploy
+            </button>
+          </div>
+
           <div className="flex items-center gap-2">
-            {generatedFiles.length > 0 && (
+            {mainTab === "generate" && generatedFiles.length > 0 && (
               <>
-                <button
-                  onClick={() => {
-                    const readmeFile = generatedFiles.find(f => f.path.toLowerCase() === "readme.md");
-                    if (readmeFile) {
-                      setSelectedFile(readmeFile);
-                    }
-                    toast.success("Your project is GitHub-ready! Download and push to GitHub.");
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-700/50 text-gray-300 border border-gray-600 hover:bg-gray-600/50 transition-all text-sm font-medium"
-                  data-testid="button-github-ready"
-                >
-                  <Github className="w-4 h-4" />
-                  GitHub Ready
-                </button>
+                {githubStatus?.connected && (
+                  <button
+                    onClick={() => {
+                      setNewRepoName(prompt.slice(0, 30).replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").toLowerCase() || "vipudev-project");
+                      setShowGitHubModal(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-800 text-white border border-gray-600 hover:bg-gray-700 transition-all text-sm font-medium"
+                    data-testid="button-push-github"
+                  >
+                    <Github className="w-4 h-4" />
+                    Push to GitHub
+                  </button>
+                )}
                 <button
                   onClick={() => downloadMutation.mutate()}
                   disabled={downloadMutation.isPending}
@@ -616,6 +1067,11 @@ Be concise but helpful. Suggest improvements to their description.`;
           </div>
         )}
 
+        {/* ============================================ */}
+        {/* GENERATE TAB CONTENT */}
+        {/* ============================================ */}
+        {mainTab === "generate" && (
+          <>
         <div className="flex items-center justify-center gap-0 py-4 mb-6">
           {STEPS.map((step, index) => (
             <div key={step.id} className="flex items-center">
@@ -750,6 +1206,38 @@ Be concise but helpful. Suggest improvements to their description.`;
                     );
                   })}
                 </div>
+
+                <h3 className="text-sm font-semibold text-gray-300 mt-6 mb-4 flex items-center gap-2">
+                  <Database className="w-4 h-4 text-cyan-400" />
+                  Select Database
+                </h3>
+                <div className="space-y-2">
+                  {DATABASE_PROVIDERS.map((db) => (
+                    <button
+                      key={db.id}
+                      onClick={() => setDatabaseProvider(db.id)}
+                      className={`w-full p-3 rounded-lg text-left transition-all flex items-center gap-3 ${
+                        databaseProvider === db.id
+                          ? "bg-cyan-500/20 border border-cyan-500/50"
+                          : "bg-gray-800/30 border border-gray-700 hover:border-gray-600"
+                      }`}
+                      data-testid={`button-db-${db.id}`}
+                    >
+                      <div className={`p-2 rounded-lg ${databaseProvider === db.id ? "bg-cyan-500/30" : "bg-gray-700/50"}`}>
+                        <Database className={`w-4 h-4 ${databaseProvider === db.id ? "text-cyan-400" : "text-gray-400"}`} />
+                      </div>
+                      <div>
+                        <p className={`text-sm font-medium ${databaseProvider === db.id ? "text-cyan-400" : "text-gray-300"}`}>
+                          {db.label}
+                        </p>
+                        <p className="text-xs text-gray-500">{db.description}</p>
+                      </div>
+                      {databaseProvider === db.id && (
+                        <Check className="w-4 h-4 text-cyan-400 ml-auto" />
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div>
@@ -838,7 +1326,6 @@ Be concise but helpful. Suggest improvements to their description.`;
             </div>
           </div>
         )}
-      </div>
 
       {currentStep === 4 && generatedFiles.length > 0 && (
         <div className="flex-1 glass-card p-4 flex gap-4 min-h-0">
@@ -949,6 +1436,71 @@ Be concise but helpful. Suggest improvements to their description.`;
               </div>
             )}
           </div>
+
+          {/* Edit & Redeploy Section - Only shown after project generation */}
+          {pushedRepoUrl && lastPushedOwnerRepo && (
+            <div className="mt-4 glass-card p-4 bg-gradient-to-r from-purple-500/5 to-blue-500/5 border border-purple-500/20">
+              <div className="flex items-center gap-2 mb-3">
+                <RefreshCw className="w-5 h-5 text-purple-400" />
+                <h4 className="font-semibold text-white">Edit & Redeploy</h4>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400">CI/CD</span>
+              </div>
+              <p className="text-gray-400 text-sm mb-3">
+                Request changes below. AI will modify your code and push updates to GitHub - your deployment will auto-update!
+              </p>
+              <div className="flex gap-2">
+                <textarea
+                  value={changeRequest}
+                  onChange={(e) => setChangeRequest(e.target.value)}
+                  placeholder="Describe what you want to change... e.g., 'Add dark mode toggle to the header' or 'Change the primary color to blue'"
+                  className="flex-1 bg-gray-800/50 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder:text-gray-600 focus:outline-none focus:border-purple-500/50 text-sm min-h-[60px]"
+                  data-testid="textarea-edit-request"
+                />
+              </div>
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={() => editCodeMutation.mutate(changeRequest)}
+                  disabled={!changeRequest.trim() || editCodeMutation.isPending}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30 transition-all disabled:opacity-50"
+                  data-testid="button-edit-code"
+                >
+                  {editCodeMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Editing...
+                    </>
+                  ) : (
+                    <>
+                      <Code className="w-4 h-4" />
+                      Edit Code
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => updateGitHubMutation.mutate(generatedFiles)}
+                  disabled={updateGitHubMutation.isPending || !changeRequest}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-all disabled:opacity-50"
+                  data-testid="button-push-updates"
+                >
+                  {updateGitHubMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Pushing...
+                    </>
+                  ) : (
+                    <>
+                      <Github className="w-4 h-4" />
+                      Push Updates
+                    </>
+                  )}
+                </button>
+              </div>
+              <div className="mt-2 text-xs text-gray-500 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-lime-400" />
+                Connected to: <a href={pushedRepoUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">{lastPushedOwnerRepo.owner}/{lastPushedOwnerRepo.repo}</a>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -987,6 +1539,449 @@ Be concise but helpful. Suggest improvements to their description.`;
           </div>
         </div>
       )}
+          </>
+        )}
+
+        {/* ============================================ */}
+        {/* DEBUG MODE TAB CONTENT */}
+        {/* ============================================ */}
+        {mainTab === "debug" && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 rounded-xl bg-gradient-to-br from-orange-500/20 to-red-500/20 border border-orange-500/20">
+                <Bug className="w-6 h-6 text-orange-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Debug Mode</h3>
+                <p className="text-gray-500 text-sm">Select a project, paste your error, and let AI fix it</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                {/* Show current project if available */}
+                {generatedFiles.length > 0 && (
+                  <div className="p-3 bg-lime-500/10 border border-lime-500/20 rounded-xl flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-lime-400" />
+                    <span className="text-sm text-lime-400">
+                      <span className="font-semibold">{generatedProjectName || "my-project"}</span> ({generatedFiles.length} files)
+                    </span>
+                  </div>
+                )}
+
+                {generatedFiles.length === 0 && (
+                  <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                    <p className="text-sm text-blue-400">
+                      Generate a project first, then paste errors here to debug!
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">
+                    <AlertTriangle className="w-4 h-4 inline mr-1 text-orange-400" />
+                    Paste Error Log
+                  </label>
+                  <textarea
+                    value={errorLog}
+                    onChange={(e) => setErrorLog(e.target.value)}
+                    placeholder="Paste your error message, stack trace, or console output here..."
+                    className="w-full h-64 bg-gray-800/50 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder:text-gray-600 focus:outline-none focus:border-orange-500/50 font-mono text-sm"
+                    data-testid="textarea-debug-error"
+                  />
+                </div>
+
+                <button
+                  onClick={() => {
+                    if (generatedFiles.length > 0) {
+                      setSelectedProjectId("current");
+                    }
+                    debugMutation.mutate();
+                  }}
+                  disabled={!errorLog.trim() || debugMutation.isPending || !apiKey}
+                  className="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  data-testid="button-debug-analyze"
+                >
+                  {debugMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <Wrench className="w-5 h-5" />
+                      Analyze & Fix
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {debugResult ? (
+                  <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-4">
+                    <div>
+                      <h4 className="text-sm font-semibold text-orange-400 mb-2 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4" />
+                        Analysis
+                      </h4>
+                      <p className="text-gray-300 text-sm">{debugResult.analysis}</p>
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-semibold text-red-400 mb-2">Root Cause</h4>
+                      <p className="text-gray-300 text-sm">{debugResult.rootCause}</p>
+                    </div>
+
+                    {debugResult.fixes.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-semibold text-lime-400 mb-2 flex items-center gap-2">
+                          <Wrench className="w-4 h-4" />
+                          Fixes
+                        </h4>
+                        <div className="space-y-3">
+                          {debugResult.fixes.map((fix, i) => (
+                            <div key={i} className="bg-gray-900/50 rounded-lg p-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-mono text-lime-400">{fix.file}</span>
+                                <button
+                                  onClick={() => copyContent(fix.fixedCode, fix.file)}
+                                  className="text-xs text-gray-400 hover:text-lime-400"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </button>
+                              </div>
+                              <p className="text-xs text-gray-400 mb-2">{fix.description}</p>
+                              <pre className="text-xs bg-gray-800 p-2 rounded overflow-x-auto text-lime-300">
+                                {fix.fixedCode}
+                              </pre>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {debugResult.additionalSteps.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-semibold text-blue-400 mb-2">Additional Steps</h4>
+                        <ul className="list-disc list-inside text-sm text-gray-300 space-y-1">
+                          {debugResult.additionalSteps.map((step, i) => (
+                            <li key={i}>{step}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Apply Fixes & Push Button - Debug Tab */}
+                    {debugResult.fixes.length > 0 && lastPushedOwnerRepo && (
+                      <button
+                        onClick={() => {
+                          const fixedFiles = debugResult.fixes.map((fix: any) => ({
+                            path: fix.file,
+                            content: fix.fixedCode,
+                            language: fix.file.split('.').pop() || 'text'
+                          }));
+                          
+                          setGeneratedFiles(prev => {
+                            const updated = [...prev];
+                            fixedFiles.forEach((fixed: any) => {
+                              const idx = updated.findIndex(f => f.path === fixed.path);
+                              if (idx >= 0) {
+                                updated[idx] = fixed;
+                              } else {
+                                updated.push(fixed);
+                              }
+                            });
+                            return updated;
+                          });
+                          
+                          updateGitHubMutation.mutate(fixedFiles);
+                        }}
+                        disabled={updateGitHubMutation.isPending}
+                        className="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-lime-500 to-green-500 hover:from-lime-600 hover:to-green-600 text-white font-medium transition-all disabled:opacity-50"
+                        data-testid="button-apply-fixes-debug"
+                      >
+                        {updateGitHubMutation.isPending ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            Applying & Pushing...
+                          </>
+                        ) : (
+                          <>
+                            <Github className="w-5 h-5" />
+                            Apply Fixes & Push to GitHub
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    {debugResult.fixes.length > 0 && !lastPushedOwnerRepo && (
+                      <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-400 text-sm">
+                        Push your project to GitHub first (in Generate tab) to enable auto-fix & push.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-gray-800/30 rounded-xl border border-gray-700/50">
+                    <Bug className="w-16 h-16 text-orange-400/30 mb-4" />
+                    <h4 className="text-lg font-semibold text-white mb-2">AI-Powered Debugging</h4>
+                    <p className="text-gray-500 text-sm">
+                      Paste your error log and VipuDevAI will analyze it, identify the root cause, and provide specific code fixes.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ============================================ */}
+        {/* DEPLOYMENT CENTER TAB CONTENT */}
+        {/* ============================================ */}
+        {mainTab === "deploy" && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 border border-blue-500/20">
+                  <Cloud className="w-6 h-6 text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Deployment Center</h3>
+                  <p className="text-gray-500 text-sm">Push to GitHub and deploy to Render, Vercel, or Railway</p>
+                </div>
+              </div>
+              {githubStatus?.connected && githubUser && (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-800/50 border border-gray-700">
+                  <img src={githubUser.avatar_url} alt="" className="w-5 h-5 rounded-full" />
+                  <span className="text-sm text-gray-400">@{githubUser.login}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Step 1: GitHub Push */}
+            {generatedFiles.length > 0 && githubStatus?.connected && !pushedRepoUrl && (
+              <div className="bg-gray-800/30 rounded-xl p-6 border border-gray-700/50">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-8 h-8 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold">1</div>
+                  <h4 className="text-white font-semibold">Push to GitHub</h4>
+                </div>
+                <p className="text-gray-400 text-sm mb-4">First, push your generated project to GitHub to enable deployment.</p>
+                <button
+                  onClick={() => {
+                    setNewRepoName(prompt.slice(0, 30).replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").toLowerCase() || "vipudev-project");
+                    setShowGitHubModal(true);
+                  }}
+                  className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gray-800 hover:bg-gray-700 text-white font-medium transition-all"
+                >
+                  <Github className="w-5 h-5" />
+                  Push to GitHub
+                </button>
+              </div>
+            )}
+
+            {/* Step 2: Deploy (after GitHub push) */}
+            {pushedRepoUrl && (
+              <div className="bg-lime-500/10 rounded-xl p-6 border border-lime-500/20">
+                <div className="flex items-center gap-3 mb-4">
+                  <CheckCircle2 className="w-6 h-6 text-lime-400" />
+                  <div>
+                    <h4 className="text-white font-semibold">Pushed to GitHub!</h4>
+                    <a href={pushedRepoUrl} target="_blank" rel="noopener noreferrer" className="text-lime-400 text-sm hover:underline flex items-center gap-1">
+                      {pushedRepoUrl} <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-8 h-8 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold">2</div>
+                  <h4 className="text-white font-semibold">Choose Deployment Platform</h4>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  {[
+                    { id: "render", name: "Render", color: "from-purple-500 to-pink-500" },
+                    { id: "vercel", name: "Vercel", color: "from-black to-gray-800" },
+                    { id: "railway", name: "Railway", color: "from-purple-600 to-indigo-600" },
+                  ].map((platform) => (
+                    <button
+                      key={platform.id}
+                      onClick={() => {
+                        setDeployPlatform(platform.id);
+                        getDeployInstructionsMutation.mutate(platform.id);
+                      }}
+                      className={`p-4 rounded-xl text-center transition-all ${
+                        deployPlatform === platform.id
+                          ? "bg-gradient-to-br " + platform.color + " text-white border-2 border-white/30"
+                          : "bg-gray-800/50 text-gray-400 border border-gray-700 hover:border-gray-600"
+                      }`}
+                      data-testid={`button-deploy-platform-${platform.id}`}
+                    >
+                      <Cloud className="w-6 h-6 mx-auto mb-1" />
+                      <span className="text-sm font-medium">{platform.name}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {deployInstructions && (
+                  <div className="bg-gray-800/50 rounded-xl p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-blue-400">{deployInstructions.platform} Deployment Steps</h4>
+                    <ol className="text-sm text-gray-300 space-y-1">
+                      {deployInstructions.steps.map((step, i) => (
+                        <li key={i}>{step}</li>
+                      ))}
+                    </ol>
+                    <a
+                      href={deployInstructions.deployUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium transition-all"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      Deploy to {deployInstructions.platform}
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Fallback: No generated files */}
+            {generatedFiles.length === 0 && (
+              <div className="bg-gray-800/30 rounded-xl p-8 text-center border border-gray-700/50">
+                <Rocket className="w-16 h-16 text-gray-600 mx-auto mb-4" />
+                <h4 className="text-lg font-semibold text-white mb-2">No Project to Deploy</h4>
+                <p className="text-gray-500 text-sm mb-4">Generate a project first in the Generate tab, then come back here to deploy it.</p>
+                <button
+                  onClick={() => setMainTab("generate")}
+                  className="px-6 py-2 rounded-xl bg-lime-500/20 text-lime-400 border border-lime-500/30 hover:bg-lime-500/30 transition-all"
+                >
+                  Go to Generate
+                </button>
+              </div>
+            )}
+
+            {/* GitHub not connected */}
+            {generatedFiles.length > 0 && !githubStatus?.connected && (
+              <div className="bg-amber-500/10 rounded-xl p-6 border border-amber-500/20">
+                <div className="flex items-center gap-3 mb-4">
+                  <AlertTriangle className="w-6 h-6 text-amber-400" />
+                  <h4 className="text-white font-semibold">GitHub Not Connected</h4>
+                </div>
+                <p className="text-gray-400 text-sm mb-4">
+                  To deploy your project, you need to connect your GitHub account first. A GitHub Personal Access Token is required.
+                </p>
+                <p className="text-amber-400 text-sm">
+                  Please add your GitHub token in the Secrets panel to enable this feature.
+                </p>
+              </div>
+            )}
+
+            {/* Debug deployment failures section */}
+            {showDeployDebug && pushedRepoUrl && (
+              <div className="bg-orange-500/10 rounded-xl p-6 border border-orange-500/20">
+                <div className="flex items-center gap-3 mb-4">
+                  <Bug className="w-6 h-6 text-orange-400" />
+                  <h4 className="text-white font-semibold">Deployment Failed?</h4>
+                </div>
+                <textarea
+                  value={deployError}
+                  onChange={(e) => setDeployError(e.target.value)}
+                  placeholder="Paste the deployment error logs here..."
+                  className="w-full h-32 bg-gray-800/50 border border-orange-500/30 rounded-xl px-4 py-3 text-white placeholder:text-gray-600 focus:outline-none focus:border-orange-500/50 font-mono text-sm mb-3"
+                  data-testid="textarea-deploy-debug-error"
+                />
+                <button
+                  onClick={() => {
+                    if (deployError) {
+                      setErrorLog(deployError);
+                      setSelectedProjectId("current");
+                      debugMutation.mutate();
+                    }
+                  }}
+                  disabled={!deployError || debugMutation.isPending}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-orange-500/20 text-orange-400 border border-orange-500/30 hover:bg-orange-500/30 transition-all disabled:opacity-50"
+                >
+                  {debugMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <Wrench className="w-4 h-4" />
+                      Analyze & Fix Deployment Issue
+                    </>
+                  )}
+                </button>
+
+                {debugResult && (
+                  <div className="mt-4 bg-gray-800/50 rounded-xl p-4 space-y-3">
+                    <h5 className="text-sm font-semibold text-orange-400">Analysis</h5>
+                    <p className="text-gray-300 text-sm">{debugResult.analysis}</p>
+                    <h5 className="text-sm font-semibold text-red-400">Root Cause</h5>
+                    <p className="text-gray-300 text-sm">{debugResult.rootCause}</p>
+                    {debugResult.fixes.length > 0 && (
+                      <div>
+                        <h5 className="text-sm font-semibold text-lime-400">Suggested Fixes</h5>
+                        {debugResult.fixes.map((fix, i) => (
+                          <div key={i} className="mt-2 bg-gray-900/50 rounded-lg p-3">
+                            <span className="text-xs font-mono text-lime-400">{fix.file}</span>
+                            <p className="text-xs text-gray-400 mt-1">{fix.description}</p>
+                          </div>
+                        ))}
+                        
+                        {/* Apply & Push button */}
+                        {lastPushedOwnerRepo && (
+                          <button
+                            onClick={() => {
+                              // Apply fixes to generated files
+                              const fixedFiles = debugResult.fixes.map((fix: any) => ({
+                                path: fix.file,
+                                content: fix.fixedCode,
+                                language: fix.file.split('.').pop() || 'text'
+                              }));
+                              
+                              // Merge with existing files
+                              setGeneratedFiles(prev => {
+                                const updated = [...prev];
+                                fixedFiles.forEach((fixed: any) => {
+                                  const idx = updated.findIndex(f => f.path === fixed.path);
+                                  if (idx >= 0) {
+                                    updated[idx] = fixed;
+                                  } else {
+                                    updated.push(fixed);
+                                  }
+                                });
+                                return updated;
+                              });
+                              
+                              // Push to GitHub
+                              updateGitHubMutation.mutate(fixedFiles);
+                            }}
+                            disabled={updateGitHubMutation.isPending}
+                            className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-lime-500 to-green-500 hover:from-lime-600 hover:to-green-600 text-white font-medium transition-all disabled:opacity-50"
+                            data-testid="button-apply-fixes"
+                          >
+                            {updateGitHubMutation.isPending ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                Applying & Pushing...
+                              </>
+                            ) : (
+                              <>
+                                <Github className="w-4 h-4" />
+                                Apply Fixes & Push to GitHub
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {showChat && (
         <div className="fixed right-4 top-20 bottom-4 w-96 glass-card flex flex-col z-50 animate-in slide-in-from-right duration-300">
@@ -1177,6 +2172,191 @@ Be concise but helpful. Suggest improvements to their description.`;
             </div>
             {!apiKey && (
               <p className="text-xs text-amber-400 mt-2">Set your API key in Chat page first</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* GitHub Push Modal */}
+      {showGitHubModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg p-6 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-gray-800">
+                  <Github className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Push to GitHub</h3>
+                  <p className="text-sm text-gray-500">
+                    {githubUser?.login ? `Connected as @${githubUser.login}` : "Push your project to GitHub"}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowGitHubModal(false)}
+                className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {pushedRepoUrl ? (
+              <div className="space-y-4">
+                <div className="bg-lime-500/10 border border-lime-500/20 rounded-xl p-4 text-center">
+                  <CheckCircle2 className="w-12 h-12 text-lime-400 mx-auto mb-3" />
+                  <h4 className="text-lg font-bold text-white mb-1">Successfully Pushed!</h4>
+                  <a
+                    href={pushedRepoUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-lime-400 hover:text-lime-300 text-sm flex items-center justify-center gap-1"
+                  >
+                    {pushedRepoUrl}
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+
+                <div className="space-y-3">
+                  <h4 className="text-sm font-semibold text-gray-400">Deploy Now</h4>
+                  <div className="grid grid-cols-3 gap-2">
+                    {["render", "vercel", "railway"].map((platform) => (
+                      <button
+                        key={platform}
+                        onClick={() => getDeployInstructionsMutation.mutate(platform)}
+                        className="p-3 rounded-xl bg-gray-800 hover:bg-gray-700 text-white text-sm font-medium transition-all flex flex-col items-center gap-2"
+                      >
+                        <Cloud className="w-5 h-5" />
+                        {platform.charAt(0).toUpperCase() + platform.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {deployInstructions && (
+                  <div className="bg-gray-800/50 rounded-xl p-4 space-y-3">
+                    <h4 className="text-sm font-semibold text-blue-400">{deployInstructions.platform} Deployment</h4>
+                    <ol className="text-sm text-gray-300 space-y-1">
+                      {deployInstructions.steps.map((step, i) => (
+                        <li key={i}>{step}</li>
+                      ))}
+                    </ol>
+                    <a
+                      href={deployInstructions.deployUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 w-full px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium transition-all"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      Deploy to {deployInstructions.platform}
+                    </a>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">
+                    Repository
+                  </label>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedRepo}
+                      onChange={(e) => setSelectedRepo(e.target.value)}
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-white focus:outline-none focus:border-gray-600"
+                      data-testid="select-github-repo"
+                    >
+                      <option value="">Create new repository</option>
+                      {reposList.map((repo) => (
+                        <option key={repo.full_name} value={repo.full_name}>
+                          {repo.full_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {!selectedRepo && (
+                  <div className="space-y-3 bg-gray-800/50 rounded-xl p-4">
+                    <h4 className="text-sm font-medium text-gray-400">Create New Repository</h4>
+                    <input
+                      type="text"
+                      value={newRepoName}
+                      onChange={(e) => setNewRepoName(e.target.value)}
+                      placeholder="repository-name"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-white placeholder:text-gray-600 focus:outline-none focus:border-gray-600"
+                      data-testid="input-new-repo-name"
+                    />
+                    <input
+                      type="text"
+                      value={newRepoDescription}
+                      onChange={(e) => setNewRepoDescription(e.target.value)}
+                      placeholder="Description (optional)"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2 text-white placeholder:text-gray-600 focus:outline-none focus:border-gray-600"
+                      data-testid="input-new-repo-description"
+                    />
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={newRepoPrivate}
+                        onChange={(e) => setNewRepoPrivate(e.target.checked)}
+                        className="rounded bg-gray-700 border-gray-600"
+                      />
+                      Private repository
+                    </label>
+                    <button
+                      onClick={() => createRepoMutation.mutate()}
+                      disabled={!newRepoName || createRepoMutation.isPending}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-gray-700 hover:bg-gray-600 text-white font-medium transition-all disabled:opacity-50"
+                      data-testid="button-create-repo"
+                    >
+                      {createRepoMutation.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Plus className="w-4 h-4" />
+                      )}
+                      Create Repository
+                    </button>
+                  </div>
+                )}
+
+                <div className="bg-gray-800/50 rounded-xl p-4">
+                  <p className="text-sm text-gray-400 mb-2">
+                    <span className="font-medium text-white">{generatedFiles.length} files</span> will be pushed
+                  </p>
+                  <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                    {generatedFiles.slice(0, 10).map((file) => (
+                      <span key={file.path} className="px-2 py-0.5 rounded bg-gray-700 text-xs text-gray-300">
+                        {file.path}
+                      </span>
+                    ))}
+                    {generatedFiles.length > 10 && (
+                      <span className="px-2 py-0.5 rounded bg-gray-700 text-xs text-gray-400">
+                        +{generatedFiles.length - 10} more
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => pushToGitHubMutation.mutate()}
+                  disabled={!selectedRepo || pushToGitHubMutation.isPending}
+                  className="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-gray-700 to-gray-600 hover:from-gray-600 hover:to-gray-500 text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  data-testid="button-push-to-github"
+                >
+                  {pushToGitHubMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Pushing...
+                    </>
+                  ) : (
+                    <>
+                      <Github className="w-5 h-5" />
+                      Push to GitHub
+                    </>
+                  )}
+                </button>
+              </div>
             )}
           </div>
         </div>

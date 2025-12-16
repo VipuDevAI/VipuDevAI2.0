@@ -6,6 +6,9 @@ import {
   insertChatMessageSchema,
   insertCodeExecutionSchema,
   insertUserConfigSchema,
+  insertProjectSnapshotSchema,
+  insertDebugSessionSchema,
+  insertDeploymentRecordSchema,
 } from "@shared/schema";
 import { z } from "zod";
 import crypto from "crypto";
@@ -177,11 +180,19 @@ import express from 'express';
    - Seed data if needed
    - Migration files
 
-5. **Deployment**
+5. **Database Setup (Neon PostgreSQL)**
+   - ALWAYS use Neon serverless PostgreSQL (@neondatabase/serverless)
+   - Include db.ts/db.py with connection using DATABASE_URL
+   - Include drizzle.config.ts for migrations
+   - Include npm run db:push script in package.json
+   - Include clear instructions in README for creating free Neon database at neon.tech
+
+6. **Deployment Files**
+   - render.yaml with DATABASE_URL env var placeholder
+   - vercel.json (if frontend-only)
+   - railway.toml (if needed)
    - Dockerfile (if needed)
-   - docker-compose.yml
-   - render.yaml / vercel.json / railway.toml
-   - README.md with setup instructions
+   - README.md with COMPLETE deployment instructions
 
 🎯 RULES:
 1. NEVER say "here's how to build..." - JUST BUILD IT
@@ -197,11 +208,38 @@ import express from 'express';
    - Setup instructions (npm install, env setup)
    - Running instructions
    - API documentation
+   - **DATABASE SETUP SECTION**:
+     * Go to https://neon.tech and create free account
+     * Create a new project and database
+     * Copy the connection string (postgresql://...)
+     * Set DATABASE_URL in your .env file or deployment platform
+     * Run: npm run db:push (creates tables automatically)
+   - **DEPLOYMENT SECTION** for Render/Vercel/Railway with env var setup
 
 💡 TECH STACK PREFERENCES:
 - Backend: Node.js + Express + TypeScript (default) or Python + FastAPI
 - Frontend: React + TypeScript + Tailwind CSS
-- Database: PostgreSQL with Drizzle ORM
+- Database: Neon PostgreSQL with Drizzle ORM (ALWAYS include these files):
+
+📦 REQUIRED DATABASE FILES (ALWAYS GENERATE):
+\`\`\`
+db.ts - Database connection using @neondatabase/serverless
+schema.ts - Drizzle schema definitions
+drizzle.config.ts - Drizzle kit configuration
+.env.example - Must include DATABASE_URL=postgresql://...
+package.json - Must include:
+  "scripts": {
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.0",
+    "drizzle-orm": "^0.36.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.30.0"
+  }
+\`\`\`
 - Auth: JWT tokens or session-based
 - Validation: Zod for TypeScript, Pydantic for Python
 
@@ -614,6 +652,447 @@ export async function registerRoutes(
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to delete project" });
+    }
+  });
+
+  // ======================================================
+  // PROJECT SNAPSHOTS - Project Memory System
+  // ======================================================
+  app.get("/api/projects/:id/snapshots", async (req, res) => {
+    try {
+      const snapshots = await storage.getProjectSnapshots(req.params.id);
+      res.json({ snapshots });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch snapshots" });
+    }
+  });
+
+  app.get("/api/snapshots/:id", async (req, res) => {
+    try {
+      const snapshot = await storage.getSnapshot(parseInt(req.params.id));
+      if (!snapshot) {
+        return res.status(404).json({ error: "Snapshot not found" });
+      }
+      res.json({ snapshot });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch snapshot" });
+    }
+  });
+
+  app.post("/api/projects/:id/snapshots", async (req, res) => {
+    try {
+      const data = insertProjectSnapshotSchema.parse({
+        ...req.body,
+        projectId: req.params.id,
+      });
+      const snapshot = await storage.createSnapshot(data);
+      res.status(201).json({ snapshot });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid data", details: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create snapshot" });
+    }
+  });
+
+  // ======================================================
+  // DEBUG SESSIONS - Error Debugging Workflow
+  // ======================================================
+  app.get("/api/projects/:id/debug-sessions", async (req, res) => {
+    try {
+      const sessions = await storage.getDebugSessions(req.params.id);
+      res.json({ sessions });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch debug sessions" });
+    }
+  });
+
+  app.get("/api/debug-sessions/:id", async (req, res) => {
+    try {
+      const session = await storage.getDebugSession(parseInt(req.params.id));
+      if (!session) {
+        return res.status(404).json({ error: "Debug session not found" });
+      }
+      res.json({ session });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch debug session" });
+    }
+  });
+
+  app.post("/api/debug-sessions", async (req, res) => {
+    try {
+      const data = insertDebugSessionSchema.parse(req.body);
+      const session = await storage.createDebugSession(data);
+      res.status(201).json({ session });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid data", details: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create debug session" });
+    }
+  });
+
+  app.patch("/api/debug-sessions/:id", async (req, res) => {
+    try {
+      const session = await storage.updateDebugSession(parseInt(req.params.id), req.body);
+      if (!session) {
+        return res.status(404).json({ error: "Debug session not found" });
+      }
+      res.json({ session });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update debug session" });
+    }
+  });
+
+  // AI Debug endpoint - analyzes error and generates fixes
+  app.post("/api/debug/analyze", async (req, res) => {
+    const { projectId, snapshotId, errorLog, apiKey } = req.body;
+
+    const openai = getOpenAI(apiKey);
+    if (!openai) {
+      return res.status(400).json({
+        error: "No API key available",
+        message: "Please provide an OpenAI API key in Settings.",
+      });
+    }
+
+    try {
+      // Get the project snapshot for context
+      let projectFiles: any[] = [];
+      if (snapshotId) {
+        const snapshot = await storage.getSnapshot(snapshotId);
+        if (snapshot) {
+          projectFiles = snapshot.files as any[];
+        }
+      } else if (projectId) {
+        const project = await storage.getProject(projectId);
+        if (project) {
+          projectFiles = project.files as any[];
+        }
+      }
+
+      const filesContext = projectFiles.length > 0
+        ? projectFiles.map((f: any) => `FILE: ${f.path}\n\`\`\`\n${f.content?.substring(0, 2000) || ''}\n\`\`\``).join("\n\n")
+        : "No project files available.";
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are VipuDevAI Debug Assistant. Your job is to analyze error logs and provide fixes.
+
+RESPONSE FORMAT (JSON):
+{
+  "analysis": "Clear explanation of what's wrong",
+  "rootCause": "The root cause of the error",
+  "fixes": [
+    {
+      "file": "path/to/file.ts",
+      "description": "What this fix does",
+      "originalCode": "the buggy code snippet",
+      "fixedCode": "the corrected code"
+    }
+  ],
+  "additionalSteps": ["Step 1", "Step 2"],
+  "preventionTips": ["Tip 1", "Tip 2"]
+}
+
+Be specific, actionable, and provide complete code fixes.`
+          },
+          {
+            role: "user",
+            content: `PROJECT FILES:
+${filesContext}
+
+ERROR LOG:
+${errorLog}
+
+Analyze this error and provide fixes.`
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 3000,
+        response_format: { type: "json_object" }
+      });
+
+      const content = completion.choices[0]?.message?.content || "{}";
+      const result = JSON.parse(content);
+
+      // Create debug session record
+      const session = await storage.createDebugSession({
+        projectId: projectId || "",
+        snapshotId: snapshotId || null,
+        errorLog,
+        analysis: result.analysis,
+        fixedFiles: result.fixes,
+        status: "completed"
+      });
+
+      res.json({ session, result });
+    } catch (error) {
+      console.error("Debug analysis error:", error);
+      res.status(500).json({ error: "Failed to analyze error" });
+    }
+  });
+
+  // ======================================================
+  // DEPLOYMENT RECORDS - Deployment Center
+  // ======================================================
+  app.get("/api/projects/:id/deployments", async (req, res) => {
+    try {
+      const deployments = await storage.getDeployments(req.params.id);
+      res.json({ deployments });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch deployments" });
+    }
+  });
+
+  app.get("/api/deployments/:id", async (req, res) => {
+    try {
+      const deployment = await storage.getDeployment(parseInt(req.params.id));
+      if (!deployment) {
+        return res.status(404).json({ error: "Deployment not found" });
+      }
+      res.json({ deployment });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch deployment" });
+    }
+  });
+
+  app.post("/api/deployments", async (req, res) => {
+    try {
+      const data = insertDeploymentRecordSchema.parse(req.body);
+      const deployment = await storage.createDeployment(data);
+      res.status(201).json({ deployment });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid data", details: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create deployment" });
+    }
+  });
+
+  app.patch("/api/deployments/:id", async (req, res) => {
+    try {
+      const deployment = await storage.updateDeployment(parseInt(req.params.id), req.body);
+      if (!deployment) {
+        return res.status(404).json({ error: "Deployment not found" });
+      }
+      res.json({ deployment });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update deployment" });
+    }
+  });
+
+  // Generate deployment config for different platforms
+  app.post("/api/deployments/generate-config", async (req, res) => {
+    const { projectId, platform, projectName } = req.body;
+
+    try {
+      let config: any = {};
+      const name = projectName?.toLowerCase().replace(/[^a-z0-9]/g, "-") || "my-app";
+
+      if (platform === "render") {
+        config = {
+          filename: "render.yaml",
+          content: `services:
+  - type: web
+    name: ${name}
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+    healthCheckPath: /api/health
+`
+        };
+      } else if (platform === "vercel") {
+        config = {
+          filename: "vercel.json",
+          content: JSON.stringify({
+            version: 2,
+            builds: [
+              { src: "package.json", use: "@vercel/node" }
+            ],
+            routes: [
+              { src: "/api/(.*)", dest: "/api/$1" },
+              { src: "/(.*)", dest: "/index.html" }
+            ],
+            env: {
+              NODE_ENV: "production"
+            }
+          }, null, 2)
+        };
+      } else if (platform === "railway") {
+        config = {
+          filename: "railway.toml",
+          content: `[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+[variables]
+NODE_ENV = "production"
+`
+        };
+      } else {
+        return res.status(400).json({ error: "Unsupported platform" });
+      }
+
+      // Create deployment record
+      const deployment = await storage.createDeployment({
+        projectId: projectId || "",
+        snapshotId: null,
+        platform,
+        status: "config_generated",
+        config
+      });
+
+      res.json({ deployment, config });
+    } catch (error) {
+      console.error("Config generation error:", error);
+      res.status(500).json({ error: "Failed to generate config" });
+    }
+  });
+
+  // Debug failed deployment
+  app.post("/api/deployments/:id/debug", async (req, res) => {
+    const { errorLog, apiKey } = req.body;
+    const deploymentId = parseInt(req.params.id);
+
+    const openai = getOpenAI(apiKey);
+    if (!openai) {
+      return res.status(400).json({
+        error: "No API key available",
+        message: "Please provide an OpenAI API key in Settings.",
+      });
+    }
+
+    try {
+      const deployment = await storage.getDeployment(deploymentId);
+      if (!deployment) {
+        return res.status(404).json({ error: "Deployment not found" });
+      }
+
+      // Get project files
+      let projectFiles: any[] = [];
+      if (deployment.snapshotId) {
+        const snapshot = await storage.getSnapshot(deployment.snapshotId);
+        if (snapshot) {
+          projectFiles = snapshot.files as any[];
+        }
+      } else if (deployment.projectId) {
+        const project = await storage.getProject(deployment.projectId);
+        if (project) {
+          projectFiles = project.files as any[];
+        }
+      }
+
+      const filesContext = projectFiles.length > 0
+        ? projectFiles.slice(0, 10).map((f: any) => `FILE: ${f.path}\n\`\`\`\n${f.content?.substring(0, 1500) || ''}\n\`\`\``).join("\n\n")
+        : "No project files available.";
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are VipuDevAI Deployment Debug Assistant. Analyze deployment errors and provide fixes.
+
+RESPONSE FORMAT (JSON):
+{
+  "analysis": "What went wrong during deployment",
+  "rootCause": "The root cause",
+  "fixes": [
+    {
+      "file": "path/to/file",
+      "description": "What this fix does",
+      "originalCode": "buggy code",
+      "fixedCode": "fixed code"
+    }
+  ],
+  "configChanges": ["Config change 1", "Config change 2"],
+  "redeploySteps": ["Step 1", "Step 2", "Step 3"]
+}
+
+Focus on deployment-specific issues: build errors, environment variables, dependencies, etc.`
+          },
+          {
+            role: "user",
+            content: `PLATFORM: ${deployment.platform}
+CONFIG: ${JSON.stringify(deployment.config, null, 2)}
+
+PROJECT FILES:
+${filesContext}
+
+DEPLOYMENT ERROR:
+${errorLog}
+
+Analyze and fix this deployment error.`
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 3000,
+        response_format: { type: "json_object" }
+      });
+
+      const content = completion.choices[0]?.message?.content || "{}";
+      const result = JSON.parse(content);
+
+      // Update deployment with debug info
+      await storage.updateDeployment(deploymentId, {
+        status: "debug_completed",
+        logs: errorLog
+      });
+
+      // Create debug session
+      const session = await storage.createDebugSession({
+        projectId: deployment.projectId,
+        snapshotId: deployment.snapshotId,
+        errorLog,
+        analysis: result.analysis,
+        fixedFiles: result.fixes,
+        status: "completed"
+      });
+
+      res.json({ session, result, deployment });
+    } catch (error) {
+      console.error("Deployment debug error:", error);
+      res.status(500).json({ error: "Failed to debug deployment" });
+    }
+  });
+
+  // ======================================================
+  // PROJECT HISTORY - Combined view of all activities
+  // ======================================================
+  app.get("/api/projects/:id/history", async (req, res) => {
+    try {
+      const projectId = req.params.id;
+      const [snapshots, debugSessions, deployments] = await Promise.all([
+        storage.getProjectSnapshots(projectId),
+        storage.getDebugSessions(projectId),
+        storage.getDeployments(projectId)
+      ]);
+
+      // Combine and sort by date
+      const history = [
+        ...snapshots.map(s => ({ type: "snapshot", data: s, date: s.createdAt })),
+        ...debugSessions.map(s => ({ type: "debug", data: s, date: s.createdAt })),
+        ...deployments.map(d => ({ type: "deployment", data: d, date: d.createdAt }))
+      ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      res.json({ history, snapshots, debugSessions, deployments });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch project history" });
     }
   });
 
@@ -1276,8 +1755,59 @@ You have access to real-time data. Always use this information when users ask ab
   // APP BUILDER - Generative Developer Agent
   // Builds complete full-stack applications
   // ======================================================
+  // Database provider configurations
+  const DATABASE_CONFIGS: Record<string, string> = {
+    neon: `
+DATABASE PROVIDER: Neon PostgreSQL (Serverless)
+- Use @neondatabase/serverless package
+- Use Drizzle ORM for schema and queries
+- Connection: process.env.DATABASE_URL
+- Files needed: db.ts, schema.ts, drizzle.config.ts
+- package.json scripts: "db:push": "drizzle-kit push"
+- README: Include Neon setup (neon.tech - free tier available)
+`,
+    supabase: `
+DATABASE PROVIDER: Supabase (PostgreSQL)
+- Use @supabase/supabase-js package
+- Connection: process.env.SUPABASE_URL and process.env.SUPABASE_ANON_KEY
+- Can use Supabase Auth for authentication
+- Files needed: supabase.ts (client setup), types.ts (generated types)
+- README: Include Supabase setup (supabase.com - free tier available)
+  * Create project at supabase.com
+  * Get URL and anon key from Settings > API
+  * Create tables in Table Editor or use SQL Editor
+`,
+    planetscale: `
+DATABASE PROVIDER: PlanetScale (Serverless MySQL)
+- Use @planetscale/database package with Prisma ORM
+- Connection: process.env.DATABASE_URL
+- Files needed: prisma/schema.prisma, db.ts
+- package.json scripts: "db:push": "prisma db push", "db:generate": "prisma generate"
+- README: Include PlanetScale setup (planetscale.com - free tier available)
+  * Create database at planetscale.com
+  * Get connection string from Connect > Create password
+`,
+    mongodb: `
+DATABASE PROVIDER: MongoDB Atlas
+- Use mongoose package
+- Connection: process.env.MONGODB_URI
+- Files needed: db.ts (mongoose connection), models/ folder with schemas
+- README: Include MongoDB Atlas setup (mongodb.com/atlas - free tier available)
+  * Create cluster at mongodb.com/atlas
+  * Get connection string from Connect > Connect your application
+  * Replace <password> with your database user password
+`,
+    none: `
+DATABASE PROVIDER: None (Stateless/Mock)
+- No database connection needed
+- Use in-memory storage or mock data
+- Suitable for frontend-only apps or demos
+- README: Note that this is a demo without persistent storage
+`
+  };
+
   app.post("/api/build", async (req, res) => {
-    const { prompt, techStack, apiKey } = req.body;
+    const { prompt, techStack, databaseProvider, apiKey } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: "Project description is required" });
@@ -1293,13 +1823,15 @@ You have access to real-time data. Always use this information when users ask ab
 
     try {
       const techStackInfo = techStack ? `\n\nUSER REQUESTED TECH STACK: ${techStack}` : "";
+      const dbConfig = DATABASE_CONFIGS[databaseProvider] || DATABASE_CONFIGS.neon;
+      const dbInfo = `\n\n${dbConfig}`;
       
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
             role: "system",
-            content: VIPU_BUILDER_PROMPT + techStackInfo,
+            content: VIPU_BUILDER_PROMPT + techStackInfo + dbInfo,
           },
           {
             role: "user",
@@ -1726,6 +2258,676 @@ Provide a JSON response with:
     } catch (error: any) {
       console.error("Code verification error:", error);
       res.status(500).json({ error: "Verification failed", details: error.message });
+    }
+  });
+
+  // ======================================================
+  // GITHUB INTEGRATION - Push projects to GitHub
+  // ======================================================
+  
+  // Check if GitHub token is configured
+  app.get("/api/github/status", (req, res) => {
+    const hasToken = !!process.env.GITHUB_TOKEN;
+    res.json({ connected: hasToken });
+  });
+
+  // Get GitHub user info
+  app.get("/api/github/user", async (req, res) => {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return res.status(400).json({ error: "GitHub token not configured" });
+    }
+
+    try {
+      const response = await fetch("https://api.github.com/user", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "VipuDevAI",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to get GitHub user info");
+      }
+
+      const user = await response.json();
+      res.json({
+        login: user.login,
+        name: user.name,
+        avatar_url: user.avatar_url,
+        html_url: user.html_url,
+      });
+    } catch (error: any) {
+      console.error("GitHub user error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // List user's repositories
+  app.get("/api/github/repos", async (req, res) => {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return res.status(400).json({ error: "GitHub token not configured" });
+    }
+
+    try {
+      const response = await fetch("https://api.github.com/user/repos?sort=updated&per_page=50", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "VipuDevAI",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to list repositories");
+      }
+
+      const repos = await response.json();
+      res.json({
+        repos: repos.map((r: any) => ({
+          name: r.name,
+          full_name: r.full_name,
+          html_url: r.html_url,
+          description: r.description,
+          private: r.private,
+          default_branch: r.default_branch,
+        })),
+      });
+    } catch (error: any) {
+      console.error("GitHub repos error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Create a new repository
+  app.post("/api/github/create-repo", async (req, res) => {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return res.status(400).json({ error: "GitHub token not configured" });
+    }
+
+    const { name, description, isPrivate } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: "Repository name required" });
+    }
+
+    try {
+      const response = await fetch("https://api.github.com/user/repos", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "VipuDevAI",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name,
+          description: description || "Created with VipuDevAI Studio",
+          private: isPrivate || false,
+          auto_init: true, // Initialize with README so Git API works
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("GitHub create repo API error:", response.status, errorData);
+        // GitHub returns errors in different formats
+        const errorMsg = errorData.message || 
+          (errorData.errors && errorData.errors[0]?.message) || 
+          "Repository creation failed";
+        throw new Error(errorMsg);
+      }
+
+      const repo = await response.json();
+      res.json({
+        success: true,
+        repo: {
+          name: repo.name,
+          full_name: repo.full_name,
+          html_url: repo.html_url,
+          clone_url: repo.clone_url,
+          default_branch: repo.default_branch || "main",
+        },
+      });
+    } catch (error: any) {
+      console.error("GitHub create repo error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Push files to a repository
+  app.post("/api/github/push", async (req, res) => {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return res.status(400).json({ error: "GitHub token not configured" });
+    }
+
+    const { owner, repo, files, message, branch } = req.body;
+    if (!owner || !repo || !files || !Array.isArray(files)) {
+      return res.status(400).json({ error: "Owner, repo, and files array required" });
+    }
+
+    const targetBranch = branch || "main";
+    const commitMessage = message || "Update from VipuDevAI Studio";
+
+    try {
+      // Get the reference for the branch
+      let sha: string | null = null;
+      try {
+        const refResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${targetBranch}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "VipuDevAI",
+            },
+          }
+        );
+        if (refResponse.ok) {
+          const refData = await refResponse.json();
+          sha = refData.object.sha;
+        }
+      } catch (e) {
+        // Branch doesn't exist yet, that's ok
+      }
+
+      // Get the tree if we have a commit
+      let baseTree: string | null = null;
+      if (sha) {
+        const commitResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/commits/${sha}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "VipuDevAI",
+            },
+          }
+        );
+        if (commitResponse.ok) {
+          const commitData = await commitResponse.json();
+          baseTree = commitData.tree.sha;
+        }
+      }
+
+      // Create blobs for each file
+      const treeItems = [];
+      for (const file of files) {
+        // Base64 encode content for binary safety
+        const base64Content = Buffer.from(file.content, 'utf-8').toString('base64');
+        
+        const blobResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/blobs`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "VipuDevAI",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              content: base64Content,
+              encoding: "base64",
+            }),
+          }
+        );
+
+        if (!blobResponse.ok) {
+          const errorData = await blobResponse.json().catch(() => ({}));
+          console.error(`Blob error for ${file.path}:`, blobResponse.status, errorData);
+          throw new Error(`Failed to create blob for ${file.path}: ${errorData.message || blobResponse.statusText}`);
+        }
+
+        const blob = await blobResponse.json();
+        treeItems.push({
+          path: file.path,
+          mode: "100644",
+          type: "blob",
+          sha: blob.sha,
+        });
+      }
+
+      // Create tree
+      const treePayload: any = { tree: treeItems };
+      if (baseTree) {
+        treePayload.base_tree = baseTree;
+      }
+
+      const treeResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/trees`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "VipuDevAI",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(treePayload),
+        }
+      );
+
+      if (!treeResponse.ok) {
+        throw new Error("Failed to create tree");
+      }
+
+      const tree = await treeResponse.json();
+
+      // Create commit
+      const commitPayload: any = {
+        message: commitMessage,
+        tree: tree.sha,
+      };
+      if (sha) {
+        commitPayload.parents = [sha];
+      }
+
+      const newCommitResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/commits`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "VipuDevAI",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(commitPayload),
+        }
+      );
+
+      if (!newCommitResponse.ok) {
+        throw new Error("Failed to create commit");
+      }
+
+      const newCommit = await newCommitResponse.json();
+
+      // Update or create reference
+      const refUrl = `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${targetBranch}`;
+      let refUpdateResponse;
+
+      if (sha) {
+        // Update existing ref
+        refUpdateResponse = await fetch(refUrl, {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "VipuDevAI",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sha: newCommit.sha,
+            force: true,
+          }),
+        });
+      } else {
+        // Create new ref
+        refUpdateResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/refs`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "VipuDevAI",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              ref: `refs/heads/${targetBranch}`,
+              sha: newCommit.sha,
+            }),
+          }
+        );
+      }
+
+      if (!refUpdateResponse.ok) {
+        throw new Error("Failed to update branch reference");
+      }
+
+      res.json({
+        success: true,
+        commit: {
+          sha: newCommit.sha,
+          message: commitMessage,
+          html_url: `https://github.com/${owner}/${repo}/commit/${newCommit.sha}`,
+        },
+        repo_url: `https://github.com/${owner}/${repo}`,
+        files_pushed: files.length,
+      });
+    } catch (error: any) {
+      console.error("GitHub push error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ======================================================
+  // DEPLOYMENT TRIGGERS - Vercel, Render, Railway
+  // ======================================================
+
+  // Generate deployment instructions and configs
+  app.post("/api/deploy/instructions", async (req, res) => {
+    const { platform, repoUrl, projectName } = req.body;
+
+    const instructions: Record<string, any> = {
+      vercel: {
+        platform: "Vercel",
+        steps: [
+          `1. Go to https://vercel.com/new`,
+          `2. Import your GitHub repository: ${repoUrl}`,
+          `3. Vercel will auto-detect the framework`,
+          `4. Add environment variables if needed`,
+          `5. Click "Deploy"`,
+        ],
+        configFile: "vercel.json",
+        configContent: JSON.stringify({
+          version: 2,
+          builds: [{ src: "server/index.ts", use: "@vercel/node" }],
+          routes: [
+            { src: "/api/(.*)", dest: "server/index.ts" },
+            { src: "/(.*)", dest: "dist/public/$1" },
+          ],
+        }, null, 2),
+        deployUrl: `https://vercel.com/new/clone?repository-url=${encodeURIComponent(repoUrl)}`,
+      },
+      render: {
+        platform: "Render",
+        steps: [
+          `1. Go to https://render.com/new/web-service`,
+          `2. Connect your GitHub repository: ${repoUrl}`,
+          `3. Set Build Command: npm install && npm run build`,
+          `4. Set Start Command: npm start`,
+          `5. Add environment variables`,
+          `6. Click "Create Web Service"`,
+        ],
+        configFile: "render.yaml",
+        configContent: `services:
+  - type: web
+    name: ${projectName || "vipudev-app"}
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false`,
+        deployUrl: `https://render.com/deploy?repo=${encodeURIComponent(repoUrl)}`,
+      },
+      railway: {
+        platform: "Railway",
+        steps: [
+          `1. Go to https://railway.app/new`,
+          `2. Deploy from GitHub repo: ${repoUrl}`,
+          `3. Railway will auto-detect settings`,
+          `4. Add environment variables`,
+          `5. Your app will be live!`,
+        ],
+        configFile: "railway.json",
+        configContent: JSON.stringify({
+          build: { builder: "nixpacks" },
+          deploy: { startCommand: "npm start", restartPolicyType: "ON_FAILURE" },
+        }, null, 2),
+        deployUrl: `https://railway.app/new/github?repo=${encodeURIComponent(repoUrl)}`,
+      },
+    };
+
+    const config = instructions[platform] || instructions.render;
+    res.json(config);
+  });
+
+  // ======================================================
+  // EDIT & REDEPLOY - AI-powered code modifications
+  // ======================================================
+
+  // Modify generated code based on user request
+  app.post("/api/edit-code", async (req, res) => {
+    const { files, changeRequest, apiKey } = req.body;
+
+    if (!files || !Array.isArray(files) || !changeRequest) {
+      return res.status(400).json({ error: "Files array and change request required" });
+    }
+
+    const openai = getOpenAI(apiKey);
+    if (!openai) {
+      return res.status(400).json({ error: "OpenAI API key required" });
+    }
+
+    try {
+      // Build context from current files
+      const fileContext = files.map((f: any) => `FILE: ${f.path}\n\`\`\`${f.language || ""}\n${f.content}\n\`\`\``).join("\n\n");
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are VipuDevAI Code Editor. The user wants to modify their generated project.
+
+Given the current project files and a change request, provide the modified files.
+
+IMPORTANT RULES:
+1. Only output files that need to be changed or added
+2. Keep the same file path format
+3. Output each modified file in this exact format:
+
+FILE: path/to/file.ext
+\`\`\`language
+complete file content here
+\`\`\`
+
+4. Include the COMPLETE file content, not just the changed parts
+5. If creating a new file, use the same format
+6. Be precise and maintain code quality
+
+CURRENT PROJECT FILES:
+${fileContext}`,
+          },
+          {
+            role: "user",
+            content: `Please make the following changes to the project:\n\n${changeRequest}`,
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 16000,
+      });
+
+      const response = completion.choices[0]?.message?.content || "";
+      const modifiedFiles = parseFilesFromResponse(response);
+
+      res.json({
+        success: true,
+        modifiedFiles,
+        rawResponse: response,
+        changeRequest,
+      });
+    } catch (error: any) {
+      console.error("Edit code error:", error);
+      res.status(500).json({ error: error.message || "Code editing failed" });
+    }
+  });
+
+  // Update files in GitHub repo (for edit & redeploy)
+  app.post("/api/github/update", async (req, res) => {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      return res.status(400).json({ error: "GitHub token not configured" });
+    }
+
+    const { owner, repo, files, message } = req.body;
+    if (!owner || !repo || !files || !Array.isArray(files)) {
+      return res.status(400).json({ error: "Owner, repo, and files array required" });
+    }
+
+    const commitMessage = message || "Update from VipuDevAI - Code modifications";
+
+    try {
+      // Use the same push logic as /api/github/push but with update-specific message
+      const targetBranch = "main";
+      
+      // Get the reference for the branch
+      let sha: string | null = null;
+      const refResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${targetBranch}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "VipuDevAI",
+          },
+        }
+      );
+      
+      if (refResponse.ok) {
+        const refData = await refResponse.json();
+        sha = refData.object.sha;
+      } else {
+        return res.status(400).json({ error: "Repository branch not found. Push initial code first." });
+      }
+
+      // Get the tree
+      const commitResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/commits/${sha}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "VipuDevAI",
+          },
+        }
+      );
+      
+      if (!commitResponse.ok) {
+        throw new Error("Failed to get current commit");
+      }
+      
+      const commitData = await commitResponse.json();
+      const baseTree = commitData.tree.sha;
+
+      // Create blobs for each file
+      const treeItems = [];
+      for (const file of files) {
+        // Base64 encode content for binary safety
+        const base64Content = Buffer.from(file.content, 'utf-8').toString('base64');
+        
+        const blobResponse = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/blobs`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "VipuDevAI",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              content: base64Content,
+              encoding: "base64",
+            }),
+          }
+        );
+
+        if (!blobResponse.ok) {
+          const errorData = await blobResponse.json().catch(() => ({}));
+          console.error(`Blob error for ${file.path}:`, blobResponse.status, errorData);
+          throw new Error(`Failed to create blob for ${file.path}: ${errorData.message || blobResponse.statusText}`);
+        }
+
+        const blob = await blobResponse.json();
+        treeItems.push({
+          path: file.path,
+          mode: "100644",
+          type: "blob",
+          sha: blob.sha,
+        });
+      }
+
+      // Create tree with base
+      const treeResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/trees`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "VipuDevAI",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            base_tree: baseTree,
+            tree: treeItems,
+          }),
+        }
+      );
+
+      if (!treeResponse.ok) {
+        throw new Error("Failed to create tree");
+      }
+
+      const tree = await treeResponse.json();
+
+      // Create commit
+      const newCommitResponse = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/git/commits`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "VipuDevAI",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message: commitMessage,
+            tree: tree.sha,
+            parents: [sha],
+          }),
+        }
+      );
+
+      if (!newCommitResponse.ok) {
+        throw new Error("Failed to create commit");
+      }
+
+      const newCommit = await newCommitResponse.json();
+
+      // Update reference
+      const refUrl = `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${targetBranch}`;
+      const refUpdateResponse = await fetch(refUrl, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "VipuDevAI",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sha: newCommit.sha,
+          force: false,
+        }),
+      });
+
+      if (!refUpdateResponse.ok) {
+        throw new Error("Failed to update branch reference");
+      }
+
+      res.json({
+        success: true,
+        commit: {
+          sha: newCommit.sha,
+          message: commitMessage,
+          html_url: `https://github.com/${owner}/${repo}/commit/${newCommit.sha}`,
+        },
+        repo_url: `https://github.com/${owner}/${repo}`,
+        files_updated: files.length,
+      });
+    } catch (error: any) {
+      console.error("GitHub update error:", error);
+      res.status(500).json({ error: error.message });
     }
   });
 
