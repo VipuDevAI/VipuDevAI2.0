@@ -1,0 +1,237 @@
+# SiteForgeAI 🚀  
+**AI-First Website Builder Platform**  
+Powered by **SmartGenEduX © 2025**
+
+---
+
+## 🌍 What is SiteForgeAI?
+
+SiteForgeAI is a **production-grade, AI-first website builder platform** designed to create **modern, premium, dynamic websites** for clients from a single reusable system.
+
+Instead of building a new website every time, SiteForgeAI works as a **core engine**:
+- One platform
+- One codebase
+- Unlimited websites
+- Fully configurable
+- AI-assisted (controlled, secure, cost-safe)
+
+The platform is built with **enterprise SaaS principles**:
+- Clear separation of frontend & backend
+- Strict AI governance
+- Multi-tenant ready
+- Scalable and future-proof
+
+---
+
+## 🎯 Core Vision
+
+> “When a client asks *‘Can this be done?’*  
+> The answer should always be **YES**.”
+
+SiteForgeAI ensures:
+- No feature lock-ins
+- No rebuilding from scratch
+- No infra excuses
+- Clean, professional output for every client
+
+---
+
+## 🧠 How SiteForgeAI Works (High Level)
+
+Client Website ↑ Frontend (Next.js – Vercel) ↑ Backend API (NestJS – Render) ↑ AI Engine + Database (Neon PostgreSQL)
+
+- **Frontend** renders websites and dashboards
+- **Backend** controls data, logic, security, AI
+- **AI** is used ONLY by Super Admin (never clients)
+- **Database** stores pages, blocks, themes, media
+
+---
+
+## 🏗️ Architecture Overview
+
+### 🔹 Split Deployment (Production-Grade)
+| Layer | Technology | Platform |
+|----|----|----|
+| Frontend | Next.js 14 | Vercel |
+| Backend | NestJS v9 | Render |
+| Database | PostgreSQL | Neon |
+| AI | OpenAI (backend only) | Secure |
+
+This avoids:
+- Downtime during updates
+- Scaling issues
+- Client-facing instability
+
+---
+
+## 🔐 AI Governance (VERY IMPORTANT)
+
+SiteForgeAI is **NOT** a public AI tool.
+
+### AI Rules:
+- ❌ Clients never use OpenAI
+- ❌ Admins never enter OpenAI keys
+- ✅ Only **SUPER_ADMIN** can trigger AI
+- ✅ AI runs only on backend
+- ✅ All AI actions are logged
+
+This ensures:
+- Cost control
+- Security
+- Predictable behavior
+- Enterprise trust
+
+---
+
+## 👥 Roles & Access Control
+
+### Roles
+- **SUPER_ADMIN**  
+  Controls AI, platform configuration, website generation
+
+- **ADMIN**  
+  Manages website content (pages, media, updates)
+
+- **USER / PUBLIC**  
+  Only views the final website
+
+### Route Protection
+- `/super-admin/*` → SUPER_ADMIN only
+- Public website → No login required
+- JWT + Role Guards enforced in backend
+
+---
+
+## 🧱 Backend Structure (NestJS)
+
+backend/ ├── src/ │   ├── auth/           # JWT, roles, guards │   ├── users/          # Users management │   ├── tenants/        # Multi-tenant support │   ├── ai/             # AI orchestration (SUPER_ADMIN only) │   ├── pages/          # Website pages │   ├── blocks/         # Sections/components │   ├── themes/         # Styling & branding │   ├── media/          # Images, videos │   ├── websocket/      # Realtime updates │   ├── health/         # Health check │   ├── database/       # Prisma + Neon │   ├── app.module.ts │   └── main.ts │ ├── prisma/ │   └── schema.prisma │ ├── package.json ├── tsconfig.json ├── .env.example └── README.md
+
+### Backend Responsibilities
+- Authentication & authorization
+- AI execution
+- Website data storage
+- Multi-tenant isolation
+- API for frontend rendering
+
+---
+
+## 🗄️ Database Design (Prisma + Neon)
+
+Core models:
+- User
+- Tenant
+- Page
+- Block
+- Theme
+- Media
+- AiLog (AI usage tracking)
+
+This design allows:
+- Unlimited websites
+- Easy future billing
+- Audit trails
+- LMS / ERP extensions later
+
+---
+
+## 🎨 Frontend Structure (Next.js)
+
+frontend/ ├── src/ │   ├── app/ │   │   ├── layout.tsx │   │   ├── page.tsx │   │   ├── auth/ │   │   ├── admin/ │   │   └── super-admin/ │   │       └── ai-studio/ │   │ │   ├── components/ │   │   ├── ui/ │   │   ├── branding/ │   │   └── ai/ │   │ │   ├── styles/ │   └── lib/ │ ├── public/ │   └── logo.svg │ ├── package.json ├── tailwind.config.ts ├── middleware.ts └── README.md
+
+### Frontend Responsibilities
+- Render websites
+- Provide dashboards
+- Send prompts (Super Admin only)
+- No AI logic
+- No secrets
+
+---
+
+## 🎨 Design & Branding
+
+### Theme
+- Elegant green gradient
+- Premium SaaS look
+- Minimal & modern
+- Responsive everywhere
+
+### Logo
+- Green gradient background
+- “SiteForgeAI” centered
+- AI / circuit abstract style
+- Footer text:  
+  **Powered by SmartGenEduX © 2025**
+
+---
+
+## 🚀 Deployment Flow
+
+### Backend (Render)
+- Create Web Service
+- Node.js 18
+- Build: `npm install && npm run build`
+- Start: `node dist/main.js`
+- Env vars:
+  - DATABASE_URL (Neon)
+  - JWT_SECRET
+  - OPENAI_SUPER_ADMIN_KEY
+
+### Frontend (Vercel)
+- Import repo
+- Root: `frontend`
+- Env vars:
+  - NEXT_PUBLIC_API_URL
+- Deploy
+
+---
+
+## 🧪 What Clients Experience
+
+- Fast website
+- Clean UI
+- No “coming soon”
+- No AI buttons
+- No broken features
+
+Clients **never know**:
+- How AI works
+- Where it runs
+- What infra exists
+
+They only see **results**.
+
+---
+
+## 🔮 Future-Ready by Design
+
+SiteForgeAI can later support:
+- LMS
+- Live classes
+- Exams
+- Payments
+- Multi-language sites
+- Theme marketplace
+- Website templates
+
+No rebuild needed.
+
+---
+
+## 🏁 Final Note
+
+SiteForgeAI is not:
+- A demo
+- A toy
+- A simple website
+
+It is a **platform**.
+
+Built once.  
+Used forever.  
+Controlled centrally.  
+Delivered professionally.
+
+**That is the power of SiteForgeAI.**
+
+—  
+**SmartGenEduX | 2025**

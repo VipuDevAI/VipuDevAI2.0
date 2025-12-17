@@ -310,6 +310,84 @@ When building ANY application with chat or AI assistant features, ALWAYS include
    - chat_threads table (id, title, createdAt, updatedAt)
    - chat_messages table (id, threadId, role, content, createdAt)
 
+🏢 ENTERPRISE SPLIT DEPLOYMENT (For NestJS + Next.js or similar):
+When user requests SPLIT deployment (frontend on Vercel, backend on Render) or uses frameworks like NestJS + Next.js, generate a MONOREPO structure:
+
+\`\`\`
+project-name/
+├── frontend/                    # Next.js → Vercel
+│   ├── package.json            # Frontend-specific deps
+│   ├── vercel.json             # Vercel config
+│   ├── next.config.js
+│   ├── tsconfig.json
+│   └── src/
+│       ├── app/
+│       ├── components/
+│       └── lib/
+│
+├── backend/                     # NestJS → Render
+│   ├── package.json            # Backend-specific deps
+│   ├── render.yaml             # Render config
+│   ├── tsconfig.json
+│   ├── nest-cli.json
+│   └── src/
+│       ├── main.ts
+│       ├── app.module.ts
+│       ├── auth/
+│       ├── users/
+│       └── ...
+│
+├── .env.example                 # All env vars documented
+├── .gitignore
+└── README.md                    # Split deployment instructions
+\`\`\`
+
+**frontend/vercel.json:**
+\`\`\`json
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "framework": "nextjs"
+}
+\`\`\`
+
+**backend/render.yaml:**
+\`\`\`yaml
+services:
+  - type: web
+    name: project-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: node dist/main.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+\`\`\`
+
+**README must include SPLIT DEPLOYMENT section:**
+\`\`\`markdown
+## Deployment
+
+### Backend (Render)
+1. Create Web Service on Render
+2. Connect GitHub repo
+3. Set Root Directory: \`backend\`
+4. Build: \`npm install && npm run build\`
+5. Start: \`node dist/main.js\`
+6. Add env vars: DATABASE_URL, JWT_SECRET
+
+### Frontend (Vercel)
+1. Import repo to Vercel
+2. Set Root Directory: \`frontend\`
+3. Add env: NEXT_PUBLIC_API_URL=https://your-backend.onrender.com
+4. Deploy
+\`\`\`
+
 Remember: You are VipuDevAI - SHORT. SHARP. EXECUTE... 
 Generate the ENTIRE application. No shortcuts. No explanations. Just CODE.`;
 
@@ -1848,7 +1926,7 @@ DATABASE PROVIDER: None (Stateless/Mock)
   };
 
   app.post("/api/build", async (req, res) => {
-    const { prompt, techStack, databaseProvider, apiKey } = req.body;
+    const { prompt, techStack, databaseProvider, apiKey, threadId, previousFiles } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: "Project description is required" });
@@ -1867,18 +1945,56 @@ DATABASE PROVIDER: None (Stateless/Mock)
       const dbConfig = DATABASE_CONFIGS[databaseProvider] || DATABASE_CONFIGS.neon;
       const dbInfo = `\n\n${dbConfig}`;
       
+      // Build conversation with memory
+      let conversationHistory: { role: "system" | "user" | "assistant"; content: string }[] = [];
+      
+      // Add system prompt
+      conversationHistory.push({
+        role: "system",
+        content: VIPU_BUILDER_PROMPT + techStackInfo + dbInfo,
+      });
+      
+      // If threadId provided, fetch previous conversation for context
+      if (threadId) {
+        try {
+          const previousMessages = await storage.getMessagesByThread(threadId);
+          // Add previous user prompts and assistant responses (summarized)
+          for (const msg of previousMessages.slice(-10)) { // Last 10 messages for context
+            if (msg.role === "user") {
+              conversationHistory.push({
+                role: "user",
+                content: msg.content.slice(0, 1000), // Truncate for context
+              });
+            } else if (msg.role === "assistant") {
+              // Summarize previous generation - just mention what files were created
+              const fileList = msg.content.match(/FILE:\s*([^\n]+)/g)?.slice(0, 10).join(", ") || "previous files";
+              conversationHistory.push({
+                role: "assistant",
+                content: `I generated: ${fileList}...`,
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Failed to fetch thread history:", err);
+        }
+      }
+      
+      // If previousFiles provided, include context about what was already built
+      let contextInfo = "";
+      if (previousFiles && Array.isArray(previousFiles) && previousFiles.length > 0) {
+        const filesList = previousFiles.map((f: any) => f.path).join(", ");
+        contextInfo = `\n\n📦 PREVIOUSLY GENERATED FILES (DO NOT REGENERATE THESE, BUILD ON TOP OF THEM):\n${filesList}\n\nThe user is now asking for additional/related functionality. Generate ONLY the new files needed, referencing the existing structure.`;
+      }
+      
+      // Add current user request
+      conversationHistory.push({
+        role: "user",
+        content: `Build me: ${prompt}${contextInfo}\n\nGenerate ALL files for a complete, production-ready application. Start immediately with the file outputs.`,
+      });
+      
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: VIPU_BUILDER_PROMPT + techStackInfo + dbInfo,
-          },
-          {
-            role: "user",
-            content: `Build me: ${prompt}\n\nGenerate ALL files for a complete, production-ready application. Start immediately with the file outputs.`,
-          },
-        ],
+        messages: conversationHistory,
         temperature: 0.3,
         max_tokens: 16384, // Maximum output for complex apps
       });
