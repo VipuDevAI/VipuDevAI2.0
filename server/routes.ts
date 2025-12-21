@@ -13,6 +13,7 @@ import {
 import { z } from "zod";
 import crypto from "crypto";
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -51,6 +52,23 @@ function getOpenAI(customKey?: string): OpenAI | null {
   }
   return null;
 }
+
+// ========================================================
+// ANTHROPIC (CLAUDE) CONFIG
+// ========================================================
+function getAnthropic(customKey?: string): Anthropic | null {
+  if (customKey) {
+    return new Anthropic({ apiKey: customKey });
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+  return null;
+}
+
+// AI Provider types
+type AIProvider = "openai" | "anthropic";
+type AIModel = "gpt-4o" | "gpt-4o-mini" | "claude-sonnet-4-5-20250929" | "claude-opus-4-5-20251101";
 
 // ========================================================
 // FILE UPLOAD (MULTER)
@@ -1926,18 +1944,33 @@ DATABASE PROVIDER: None (Stateless/Mock)
   };
 
   app.post("/api/build", async (req, res) => {
-    const { prompt, techStack, databaseProvider, apiKey, threadId, previousFiles } = req.body;
+    const { prompt, techStack, databaseProvider, apiKey, anthropicKey, threadId, previousFiles, aiProvider, aiModel } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: "Project description is required" });
     }
 
-    const openai = getOpenAI(apiKey);
-    if (!openai) {
-      return res.status(400).json({
-        error: "OpenAI API key required",
-        hint: "Please add your OpenAI API key",
-      });
+    // Determine which AI provider to use
+    const provider: AIProvider = aiProvider || "openai";
+    const model: string = aiModel || (provider === "anthropic" ? "claude-sonnet-4-5-20250929" : "gpt-4o");
+    
+    // Validate API keys based on provider
+    if (provider === "anthropic") {
+      const anthropic = getAnthropic(anthropicKey);
+      if (!anthropic) {
+        return res.status(400).json({
+          error: "Anthropic API key required",
+          hint: "Please add your Claude API key to use Anthropic models",
+        });
+      }
+    } else {
+      const openai = getOpenAI(apiKey);
+      if (!openai) {
+        return res.status(400).json({
+          error: "OpenAI API key required",
+          hint: "Please add your OpenAI API key",
+        });
+      }
     }
 
     try {
@@ -1948,10 +1981,12 @@ DATABASE PROVIDER: None (Stateless/Mock)
       // Build conversation with memory
       let conversationHistory: { role: "system" | "user" | "assistant"; content: string }[] = [];
       
-      // Add system prompt
+      const systemPrompt = VIPU_BUILDER_PROMPT + techStackInfo + dbInfo;
+      
+      // Add system prompt (for OpenAI format)
       conversationHistory.push({
         role: "system",
-        content: VIPU_BUILDER_PROMPT + techStackInfo + dbInfo,
+        content: systemPrompt,
       });
       
       // If threadId provided, fetch previous conversation for context
@@ -1987,19 +2022,44 @@ DATABASE PROVIDER: None (Stateless/Mock)
       }
       
       // Add current user request
+      const userMessage = `Build me: ${prompt}${contextInfo}\n\nGenerate ALL files for a complete, production-ready application. Start immediately with the file outputs.`;
       conversationHistory.push({
         role: "user",
-        content: `Build me: ${prompt}${contextInfo}\n\nGenerate ALL files for a complete, production-ready application. Start immediately with the file outputs.`,
+        content: userMessage,
       });
       
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: conversationHistory,
-        temperature: 0.3,
-        max_tokens: 16384, // Maximum output for complex apps
-      });
-
-      const rawResponse = completion.choices[0]?.message?.content || "";
+      let rawResponse = "";
+      
+      if (provider === "anthropic") {
+        // Use Claude API
+        const anthropic = getAnthropic(anthropicKey)!;
+        
+        // Convert to Anthropic format (system prompt separate)
+        const claudeMessages = conversationHistory
+          .filter(m => m.role !== "system")
+          .map(m => ({ role: m.role as "user" | "assistant", content: m.content }));
+        
+        const completion = await anthropic.messages.create({
+          model: model,
+          max_tokens: 16384,
+          system: systemPrompt,
+          messages: claudeMessages,
+        });
+        
+        rawResponse = completion.content[0].type === "text" ? completion.content[0].text : "";
+      } else {
+        // Use OpenAI API
+        const openai = getOpenAI(apiKey)!;
+        
+        const completion = await openai.chat.completions.create({
+          model: model,
+          messages: conversationHistory,
+          temperature: 0.3,
+          max_tokens: 16384,
+        });
+        
+        rawResponse = completion.choices[0]?.message?.content || "";
+      }
       
       // Parse the response into files
       const files = parseFilesFromResponse(rawResponse);
@@ -2008,7 +2068,8 @@ DATABASE PROVIDER: None (Stateless/Mock)
         rawResponse,
         files,
         fileCount: files.length,
-        model: "gpt-4o",
+        model: model,
+        provider: provider,
         prompt,
       });
     } catch (error: any) {
@@ -2017,6 +2078,74 @@ DATABASE PROVIDER: None (Stateless/Mock)
         error: "Build failed",
         details: error.message,
       });
+    }
+  });
+
+  // ======================================================
+  // EXTRACT ZIP - Parse uploaded ZIP file into file array
+  // ======================================================
+  app.post("/api/extract-zip", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+      
+      // Use file path since multer is in disk storage mode
+      const zip = new AdmZip(req.file.path);
+      const entries = zip.getEntries();
+      const files: { path: string; content: string }[] = [];
+      
+      const textExtensions = [
+        ".ts", ".tsx", ".js", ".jsx", ".json", ".html", ".css", ".scss", ".sass", ".less",
+        ".md", ".txt", ".yaml", ".yml", ".toml", ".env", ".env.example", ".gitignore",
+        ".py", ".go", ".rs", ".rb", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
+        ".sql", ".prisma", ".graphql", ".vue", ".svelte", ".astro", ".sh", ".bash", ".zsh",
+        ".xml", ".svg", ".dockerfile", ".makefile", ".editorconfig", ".prettierrc", ".eslintrc"
+      ];
+      
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        
+        const fileName = entry.entryName.toLowerCase();
+        const isTextFile = textExtensions.some(ext => fileName.endsWith(ext)) ||
+          fileName.includes("readme") || fileName.includes("license") ||
+          fileName.includes("dockerfile") || fileName.includes("makefile") ||
+          !fileName.includes(".");
+        
+        if (isTextFile) {
+          try {
+            const content = entry.getData().toString("utf8");
+            if (content.length < 100000) {
+              files.push({
+                path: entry.entryName,
+                content,
+              });
+            }
+          } catch (err) {
+            console.log(`Skipping binary/non-text file: ${entry.entryName}`);
+          }
+        }
+      }
+      
+      // Clean up uploaded file
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanupErr) {
+        console.log("Cleanup warning:", cleanupErr);
+      }
+      
+      res.json({
+        files,
+        fileCount: files.length,
+        totalEntries: entries.length,
+      });
+    } catch (error: any) {
+      console.error("ZIP extraction error:", error);
+      // Clean up on error too
+      if (req.file?.path) {
+        try { fs.unlinkSync(req.file.path); } catch {}
+      }
+      res.status(500).json({ error: "Failed to extract ZIP file", details: error.message });
     }
   });
 

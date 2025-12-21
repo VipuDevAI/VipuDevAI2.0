@@ -186,9 +186,27 @@ export default function Builder() {
   const [techStack, setTechStack] = useState("default");
   const [databaseProvider, setDatabaseProvider] = useState("neon");
   const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
+  const [aiProvider, setAiProvider] = useState<"openai" | "anthropic">(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("vipudev_ai_provider") as "openai" | "anthropic") || "openai";
+    }
+    return "openai";
+  });
+  const [aiModel, setAiModel] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("vipudev_ai_model") || "gpt-4o";
+    }
+    return "gpt-4o";
+  });
   const [apiKey, setApiKey] = useState(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem("vipudev_api_key") || "";
+    }
+    return "";
+  });
+  const [anthropicKey, setAnthropicKey] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("vipudev_anthropic_key") || "";
     }
     return "";
   });
@@ -209,6 +227,9 @@ export default function Builder() {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const [rawResponse, setRawResponse] = useState("");
+  const [attachedProjectFiles, setAttachedProjectFiles] = useState<{ path: string; content: string }[]>([]);
+  const [isExtractingZip, setIsExtractingZip] = useState(false);
+  const projectFileInputRef = useRef<HTMLInputElement>(null);
   
   const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -479,6 +500,21 @@ Be concise but helpful. Suggest improvements to their description.`;
     }
   }, [generatedProjectName]);
 
+  // Persist AI provider and model settings
+  useEffect(() => {
+    localStorage.setItem("vipudev_ai_provider", aiProvider);
+  }, [aiProvider]);
+
+  useEffect(() => {
+    localStorage.setItem("vipudev_ai_model", aiModel);
+  }, [aiModel]);
+
+  useEffect(() => {
+    if (anthropicKey) {
+      localStorage.setItem("vipudev_anthropic_key", anthropicKey);
+    }
+  }, [anthropicKey]);
+
   const toggleFeature = (feature: string) => {
     setSelectedFeatures(prev =>
       prev.includes(feature) ? prev.filter(f => f !== feature) : [...prev, feature]
@@ -495,6 +531,7 @@ Be concise but helpful. Suggest improvements to their description.`;
         ? `\nFeatures: ${selectedFeatures.join(", ")}`
         : "";
       
+      // App Builder always uses Claude for best code quality
       const res = await fetch("/api/build", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -503,6 +540,11 @@ Be concise but helpful. Suggest improvements to their description.`;
           techStack: techStack !== "default" ? techStack : undefined,
           databaseProvider: databaseProvider,
           apiKey: apiKey || undefined,
+          anthropicKey: anthropicKey || undefined,
+          aiProvider: "anthropic", // Always use Claude for building apps
+          aiModel: "claude-sonnet-4-5-20250929", // Claude Sonnet 4.5 - best for coding
+          threadId: currentThreadId || undefined,
+          previousFiles: generatedFiles.length > 0 ? generatedFiles : (attachedProjectFiles.length > 0 ? attachedProjectFiles : undefined),
         }),
       });
 
@@ -514,10 +556,18 @@ Be concise but helpful. Suggest improvements to their description.`;
       return res.json() as Promise<BuildResponse>;
     },
     onSuccess: (data) => {
-      setGeneratedFiles(data.files);
+      // Merge new files with existing ones (for incremental builds)
+      // New files override existing ones with same path
+      const existingPaths = new Set(generatedFiles.map(f => f.path));
+      const newFiles = data.files.filter(f => !existingPaths.has(f.path));
+      const updatedFiles = data.files.filter(f => existingPaths.has(f.path));
+      const unchangedFiles = generatedFiles.filter(f => !data.files.some(nf => nf.path === f.path));
+      
+      const mergedFiles = [...unchangedFiles, ...updatedFiles, ...newFiles];
+      setGeneratedFiles(mergedFiles.length > 0 ? mergedFiles : data.files);
       setRawResponse(data.rawResponse);
       const projectName = prompt.slice(0, 30).replace(/[^\w\s]/g, "").replace(/\s+/g, "-") || "vipudev-project";
-      setGeneratedProjectName(projectName);
+      if (!generatedProjectName) setGeneratedProjectName(projectName);
       if (data.files.length > 0) {
         setSelectedFile(data.files[0]);
         const folders = new Set<string>();
@@ -906,6 +956,49 @@ Be concise but helpful. Suggest improvements to their description.`;
     buildMutation.mutate();
   };
 
+  const handleProjectFileAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const file = files[0];
+    
+    if (file.name.endsWith(".zip")) {
+      setIsExtractingZip(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        
+        const response = await fetch("/api/extract-zip", {
+          method: "POST",
+          body: formData,
+        });
+        
+        if (!response.ok) {
+          throw new Error("Failed to extract ZIP file");
+        }
+        
+        const data = await response.json();
+        setAttachedProjectFiles(data.files);
+        toast.success(`Extracted ${data.fileCount} files from ${file.name}`);
+      } catch (err) {
+        toast.error("Failed to extract ZIP file");
+        console.error(err);
+      } finally {
+        setIsExtractingZip(false);
+      }
+    } else {
+      try {
+        const content = await file.text();
+        setAttachedProjectFiles([{ path: file.name, content }]);
+        toast.success(`Attached: ${file.name}`);
+      } catch (err) {
+        toast.error("Failed to read file");
+      }
+    }
+    
+    e.target.value = "";
+  };
+
   const { tree, folders } = buildFileTree();
 
   return (
@@ -996,76 +1089,147 @@ Be concise but helpful. Suggest improvements to their description.`;
                 </button>
               </>
             )}
-            <button
-              onClick={() => setShowChat(!showChat)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all text-sm font-medium ${
-                showChat
-                  ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
-                  : "bg-gray-700/50 text-gray-300 border border-gray-600 hover:bg-gray-600/50"
-              }`}
-              data-testid="button-toggle-chat"
-            >
-              {showChat ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
-              AI Assistant
-            </button>
+            {currentStep !== 4 && (
+              <button
+                onClick={() => setShowChat(!showChat)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all text-sm font-medium ${
+                  showChat
+                    ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                    : "bg-gray-700/50 text-gray-300 border border-gray-600 hover:bg-gray-600/50"
+                }`}
+                data-testid="button-toggle-chat"
+              >
+                {showChat ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+                AI Assistant
+              </button>
+            )}
           </div>
         </div>
 
-        {!apiKey ? (
-          <div className="rounded-xl p-4 flex items-center gap-3 mb-4 bg-amber-500/10 border border-amber-500/20">
-            <Key className="w-5 h-5 flex-shrink-0 text-amber-400" />
-            <div className="flex-1">
-              <input
-                type="password"
-                id="builder-api-key-input"
-                placeholder="Enter your OpenAI API key (sk-...)"
-                className="w-full bg-transparent text-sm text-white placeholder:text-amber-400/60 focus:outline-none"
-                data-testid="input-builder-api-key"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    const input = e.target as HTMLInputElement;
-                    if (input.value.trim()) {
+        {/* API Keys Configuration - Claude for Building, GPT for Chat */}
+        <div className="rounded-xl p-4 mb-4 bg-gray-800/50 border border-gray-700">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xs text-gray-500">Powered by:</span>
+            <span className="px-2 py-0.5 text-xs bg-purple-500/20 text-purple-400 rounded-full">Claude for Building</span>
+            <span className="px-2 py-0.5 text-xs bg-green-500/20 text-green-400 rounded-full">GPT for Chat</span>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Claude API Key - For Building */}
+            {!anthropicKey ? (
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                <Key className="w-4 h-4 flex-shrink-0 text-purple-400" />
+                <div className="flex-1">
+                  <div className="text-xs text-purple-400 mb-1">Claude API Key (for App Building)</div>
+                  <input
+                    type="password"
+                    id="builder-anthropic-key-input"
+                    placeholder="sk-ant-..."
+                    className="w-full bg-transparent text-sm text-white placeholder:text-purple-400/60 focus:outline-none"
+                    data-testid="input-builder-anthropic-key"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const input = e.target as HTMLInputElement;
+                        if (input.value.trim()) {
+                          const key = input.value.trim();
+                          setAnthropicKey(key);
+                          localStorage.setItem("vipudev_anthropic_key", key);
+                          toast.success("Claude API key saved!");
+                        }
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  onClick={() => {
+                    const input = document.getElementById("builder-anthropic-key-input") as HTMLInputElement;
+                    if (input?.value.trim()) {
+                      const key = input.value.trim();
+                      setAnthropicKey(key);
+                      localStorage.setItem("vipudev_anthropic_key", key);
+                      toast.success("Claude API key saved!");
+                    }
+                  }}
+                  className="px-3 py-1.5 text-xs bg-purple-500/20 text-purple-400 rounded-lg hover:bg-purple-500/30 transition-colors"
+                >
+                  Save
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                <Key className="w-4 h-4 text-purple-400" />
+                <span className="text-sm text-purple-400 flex-1">Claude ready for building</span>
+                <button
+                  onClick={() => {
+                    setAnthropicKey("");
+                    localStorage.removeItem("vipudev_anthropic_key");
+                    toast.info("Claude key cleared");
+                  }}
+                  className="text-xs text-gray-400 hover:text-red-400 transition-colors"
+                >
+                  Change
+                </button>
+              </div>
+            )}
+            
+            {/* OpenAI API Key - For Chat */}
+            {!apiKey ? (
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                <Key className="w-4 h-4 flex-shrink-0 text-green-400" />
+                <div className="flex-1">
+                  <div className="text-xs text-green-400 mb-1">OpenAI API Key (for Chat)</div>
+                  <input
+                    type="password"
+                    id="builder-api-key-input"
+                    placeholder="sk-..."
+                    className="w-full bg-transparent text-sm text-white placeholder:text-green-400/60 focus:outline-none"
+                    data-testid="input-builder-api-key"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const input = e.target as HTMLInputElement;
+                        if (input.value.trim()) {
+                          const key = input.value.trim();
+                          setApiKey(key);
+                          localStorage.setItem("vipudev_api_key", key);
+                          toast.success("OpenAI API key saved!");
+                        }
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  onClick={() => {
+                    const input = document.getElementById("builder-api-key-input") as HTMLInputElement;
+                    if (input?.value.trim()) {
                       const key = input.value.trim();
                       setApiKey(key);
                       localStorage.setItem("vipudev_api_key", key);
-                      toast.success("API key saved!");
+                      toast.success("OpenAI API key saved!");
                     }
-                  }
-                }}
-              />
-              <p className="text-xs mt-1 text-amber-500/60">Press Enter to save. Your key is stored in browser only.</p>
-            </div>
-            <button
-              onClick={() => {
-                const input = document.getElementById("builder-api-key-input") as HTMLInputElement;
-                if (input?.value.trim()) {
-                  const key = input.value.trim();
-                  setApiKey(key);
-                  localStorage.setItem("vipudev_api_key", key);
-                  toast.success("API key saved!");
-                }
-              }}
-              className="px-3 py-1.5 text-xs bg-amber-500/20 text-amber-400 rounded-lg hover:bg-amber-500/30 transition-colors"
-            >
-              Save
-            </button>
+                  }}
+                  className="px-3 py-1.5 text-xs bg-green-500/20 text-green-400 rounded-lg hover:bg-green-500/30 transition-colors"
+                >
+                  Save
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                <Key className="w-4 h-4 text-green-400" />
+                <span className="text-sm text-green-400 flex-1">GPT ready for chat</span>
+                <button
+                  onClick={() => {
+                    setApiKey("");
+                    localStorage.removeItem("vipudev_api_key");
+                    toast.info("OpenAI key cleared");
+                  }}
+                  className="text-xs text-gray-400 hover:text-red-400 transition-colors"
+                >
+                  Change
+                </button>
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="rounded-xl p-3 flex items-center gap-3 mb-4 bg-lime-500/10 border border-lime-500/20">
-            <Key className="w-4 h-4 text-lime-400" />
-            <span className="text-sm text-lime-400 flex-1">API key saved - ready to build!</span>
-            <button
-              onClick={() => {
-                setApiKey("");
-                localStorage.removeItem("vipudev_api_key");
-                toast.info("API key cleared");
-              }}
-              className="text-xs text-gray-400 hover:text-red-400 transition-colors"
-            >
-              Change Key
-            </button>
-          </div>
-        )}
+        </div>
 
         {/* ============================================ */}
         {/* GENERATE TAB CONTENT */}
@@ -1277,6 +1441,61 @@ Be concise but helpful. Suggest improvements to their description.`;
                   className="w-full bg-gray-800/50 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder:text-gray-600 focus:outline-none focus:border-lime-400/50 resize-none h-32"
                   data-testid="input-project-prompt"
                 />
+                
+                {/* Project File Attachment */}
+                <input
+                  type="file"
+                  ref={projectFileInputRef}
+                  onChange={handleProjectFileAttach}
+                  className="hidden"
+                  accept=".zip,.ts,.tsx,.js,.jsx,.json,.html,.css,.py,.go,.rs,.md,.txt,.yaml,.yml"
+                  data-testid="input-project-files"
+                />
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    onClick={() => projectFileInputRef.current?.click()}
+                    disabled={isExtractingZip}
+                    className="flex items-center gap-2 px-3 py-2 text-xs bg-gray-800/50 text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-700/50 hover:text-white transition-all disabled:opacity-50"
+                    data-testid="button-attach-project"
+                  >
+                    {isExtractingZip ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Paperclip className="w-4 h-4" />
+                    )}
+                    {isExtractingZip ? "Extracting..." : "Attach Existing Project (ZIP or file)"}
+                  </button>
+                  
+                  {attachedProjectFiles.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-lime-400">
+                        {attachedProjectFiles.length} file{attachedProjectFiles.length !== 1 ? "s" : ""} attached
+                      </span>
+                      <button
+                        onClick={() => setAttachedProjectFiles([])}
+                        className="text-xs text-red-400 hover:text-red-300"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {attachedProjectFiles.length > 0 && (
+                  <div className="mt-2 p-2 bg-gray-800/30 rounded-lg max-h-24 overflow-y-auto">
+                    <div className="flex flex-wrap gap-1">
+                      {attachedProjectFiles.slice(0, 10).map((f, i) => (
+                        <span key={i} className="px-2 py-0.5 text-xs bg-gray-700/50 text-gray-400 rounded">
+                          {f.path.split("/").pop()}
+                        </span>
+                      ))}
+                      {attachedProjectFiles.length > 10 && (
+                        <span className="px-2 py-0.5 text-xs bg-gray-700/50 text-gray-500 rounded">
+                          +{attachedProjectFiles.length - 10} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1290,12 +1509,12 @@ Be concise but helpful. Suggest improvements to their description.`;
               </button>
               <button
                 onClick={handleStartBuild}
-                disabled={!apiKey || buildMutation.isPending || (!prompt && selectedTemplate === "custom")}
-                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-green-600 to-lime-500 hover:from-green-500 hover:to-lime-400 text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 shadow-lg shadow-green-500/20 font-semibold"
+                disabled={!anthropicKey || buildMutation.isPending || (!prompt && selectedTemplate === "custom")}
+                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-violet-500 hover:from-purple-500 hover:to-violet-400 text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 shadow-lg shadow-purple-500/20 font-semibold"
                 data-testid="button-build"
               >
                 <Sparkles className="w-5 h-5" />
-                Build Application
+                Build with Claude
               </button>
             </div>
           </div>
@@ -1311,7 +1530,8 @@ Be concise but helpful. Suggest improvements to their description.`;
             </div>
             <div className="text-center">
               <h3 className="text-xl font-bold text-white mb-2">Building Your Application</h3>
-              <p className="text-gray-400 text-sm">AI is generating your complete project structure...</p>
+              <p className="text-gray-400 text-sm">Claude is generating your complete project structure...</p>
+              <span className="mt-2 inline-block px-2 py-0.5 text-xs bg-purple-500/20 text-purple-400 rounded-full">Powered by Claude Sonnet 4.5</span>
             </div>
             <div className="flex gap-2">
               {["Backend", "Frontend", "Database", "API"].map((item, i) => (
@@ -1328,11 +1548,93 @@ Be concise but helpful. Suggest improvements to their description.`;
         )}
 
       {currentStep === 4 && generatedFiles.length > 0 && (
-        <div className="flex-1 glass-card p-4 flex gap-4 min-h-0">
-          <div className="w-64 flex-shrink-0 overflow-y-auto border-r border-gray-700/50 pr-4">
+        <div className="flex-1 flex gap-4 min-h-0">
+          {/* LEFT PANEL - Chat Interface */}
+          <div className="w-[400px] flex-shrink-0 glass-card p-4 flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2 text-lime-400">
+                <MessageSquare className="w-4 h-4" />
+                <span className="text-sm font-medium">AI Chat</span>
+              </div>
+              <span className="text-xs text-gray-500">Modify your app with AI</span>
+            </div>
+            
+            {/* Chat Messages */}
+            <div className="flex-1 overflow-y-auto mb-3 space-y-3 min-h-0">
+              {chatMessages.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  <Sparkles className="w-8 h-8 mx-auto mb-2 text-gray-600" />
+                  <p className="text-sm">Ask AI to modify your app</p>
+                  <div className="mt-3 flex flex-wrap gap-1 justify-center">
+                    {["Add dark mode", "Add login page", "Improve styling", "Add API endpoint"].map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        onClick={() => setChatInput(suggestion)}
+                        className="px-2 py-1 text-xs bg-gray-800/50 text-gray-400 rounded-full hover:bg-gray-700/50 transition-colors"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                chatMessages.map((msg, i) => (
+                  <div
+                    key={i}
+                    className={`p-3 rounded-lg ${
+                      msg.role === "user"
+                        ? "bg-lime-500/10 border border-lime-500/20 ml-8"
+                        : "bg-gray-800/50 border border-gray-700 mr-8"
+                    }`}
+                  >
+                    <div className="text-xs text-gray-500 mb-1">
+                      {msg.role === "user" ? "You" : "VipuDevAI"}
+                    </div>
+                    <p className="text-sm text-gray-200 whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                ))
+              )}
+              {chatMutation.isPending && (
+                <div className="flex items-center gap-2 text-gray-400 p-3">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-sm">AI is thinking...</span>
+                </div>
+              )}
+            </div>
+            
+            {/* Chat Input */}
+            <div className="flex gap-2">
+              <textarea
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleChatSend();
+                  }
+                }}
+                placeholder="Describe changes you want..."
+                className="flex-1 bg-gray-800/50 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-lime-400/50 resize-none h-20"
+                data-testid="input-split-chat"
+              />
+            </div>
+            <button
+              onClick={handleChatSend}
+              disabled={!chatInput.trim() || chatMutation.isPending}
+              className="mt-2 w-full py-2 rounded-lg bg-lime-500/20 text-lime-400 border border-lime-500/30 hover:bg-lime-500/30 transition-all disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
+              data-testid="button-split-send"
+            >
+              <Send className="w-4 h-4" />
+              Send
+            </button>
+          </div>
+          
+          {/* RIGHT PANEL - File Preview */}
+          <div className="flex-1 glass-card p-4 flex gap-4 min-h-0">
+          <div className="w-56 flex-shrink-0 overflow-y-auto border-r border-gray-700/50 pr-4">
             <div className="flex items-center gap-2 mb-3 text-gray-400">
               <FolderTree className="w-4 h-4" />
-              <span className="text-sm font-medium">Project Files ({generatedFiles.length})</span>
+              <span className="text-sm font-medium">Files ({generatedFiles.length})</span>
             </div>
 
             {tree["/"]?.map((file) => (
@@ -1501,6 +1803,7 @@ Be concise but helpful. Suggest improvements to their description.`;
               </div>
             </div>
           )}
+          </div>
         </div>
       )}
 
