@@ -21,6 +21,10 @@ import { exec } from "child_process";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from "docx";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth");
 
 // ========================================================
 // AUTH CONFIG
@@ -302,11 +306,125 @@ package.json - Must include:
 - Auth: JWT tokens or session-based
 - Validation: Zod for TypeScript, Pydantic for Python
 
-🎨 DESIGN:
-- Modern, clean UI with proper spacing
+🎨 DESIGN - PREMIUM UI MANDATORY:
+⚠️ CRITICAL: Generated code MUST have CLIENT-READY, PREMIUM UI quality. No plain HTML!
+
+🎯 **USER COLOR/STYLE REQUESTS - HIGHEST PRIORITY:**
+If user specifies ANY color, theme, or design preference, USE EXACTLY WHAT THEY ASK:
+- "blue theme" → Use blue (#3b82f6, #1d4ed8, #60a5fa) as primary
+- "red and black" → Dark backgrounds with red (#ef4444, #dc2626) accents
+- "orange colors" → Orange (#f97316, #ea580c, #fb923c) theme
+- "green nature" → Green (#22c55e, #16a34a, #4ade80) palette
+- "pink/purple" → Pink (#ec4899) and purple (#a855f7) gradients
+- "corporate blue" → Professional blues with white
+- "neon cyberpunk" → Dark with neon cyan/pink/purple
+- "minimal white" → Clean white/gray theme
+- "earthy tones" → Browns, greens, warm colors
+ALWAYS respect user's color preferences. Apply them to buttons, cards, gradients, accents.
+
+**DEFAULT COLOR SCHEMES (Use if user doesn't specify):**
+- Dark Mode (Default): Deep navy (#0f172a, #1e293b), with accent gradients
+- Light Mode: Clean whites (#ffffff, #f8fafc) with subtle shadows
+- Accent Colors: Teal (#14b8a6), Violet (#8b5cf6), Amber (#f59e0b), Rose (#f43f5e)
+
+**TAILWIND CSS STYLING (ALWAYS USE):**
+\`\`\`css
+/* Premium Card */
+.card { @apply bg-gradient-to-br from-slate-900/90 to-slate-800/80 backdrop-blur-xl 
+  border border-white/10 rounded-2xl shadow-2xl hover:shadow-violet-500/10 
+  hover:border-violet-500/20 transition-all duration-300; }
+
+/* Glassmorphism */
+.glass { @apply bg-white/5 backdrop-blur-lg border border-white/10 rounded-xl; }
+
+/* Premium Buttons */
+.btn-primary { @apply bg-gradient-to-r from-violet-600 to-indigo-600 
+  hover:from-violet-500 hover:to-indigo-500 text-white font-semibold 
+  px-6 py-3 rounded-xl shadow-lg shadow-violet-500/25 
+  hover:shadow-xl hover:shadow-violet-500/40 hover:-translate-y-0.5 
+  transition-all duration-200; }
+
+/* Gradient Text */
+.gradient-text { @apply bg-gradient-to-r from-violet-400 via-purple-400 to-indigo-400 
+  bg-clip-text text-transparent; }
+\`\`\`
+
+**COMPONENT PATTERNS:**
+1. **Cards**: Glassmorphism with gradient borders, subtle glow on hover
+2. **Buttons**: Gradient fills with shadow, lift effect on hover
+3. **Inputs**: Dark backgrounds, focus rings with brand color
+4. **Tables**: Alternating rows, hover highlights, rounded corners
+5. **Modals**: Backdrop blur, slide-in animations
+6. **Sidebars**: Dark with active state gradients
+7. **Headers**: Sticky with blur effect
+
+**ANIMATIONS (Include in globals.css):**
+\`\`\`css
+@keyframes fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slide-in { from { transform: translateX(-20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 20px rgba(139, 92, 246, 0.3); } 50% { box-shadow: 0 0 40px rgba(139, 92, 246, 0.5); } }
+
+.animate-fade-in { animation: fade-in 0.3s ease-out; }
+.animate-slide-in { animation: slide-in 0.3s ease-out; }
+\`\`\`
+
+**TYPOGRAPHY:**
+- Headings: font-bold, tracking-tight, gradient text for hero sections
+- Body: text-slate-300 (dark mode), text-slate-600 (light mode)
+- Use Inter or system fonts: font-sans
+
+**LAYOUT:**
+- Max-width containers: max-w-7xl mx-auto px-4
+- Generous padding: p-6, p-8 for sections
+- Grid layouts: grid-cols-1 md:grid-cols-2 lg:grid-cols-3
+- Flex with gaps: flex gap-4
+
+**MANDATORY TAILWIND CONFIG:**
+\`\`\`javascript
+// tailwind.config.js
+module.exports = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        brand: { 50: '#faf5ff', 500: '#8b5cf6', 600: '#7c3aed', 900: '#4c1d95' }
+      },
+      animation: {
+        'fade-in': 'fade-in 0.3s ease-out',
+        'slide-in': 'slide-in 0.3s ease-out',
+      }
+    }
+  }
+}
+\`\`\`
+
+**EXAMPLE PREMIUM COMPONENT:**
+\`\`\`tsx
+<div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-violet-950">
+  <div className="max-w-7xl mx-auto px-6 py-12">
+    <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-violet-200 bg-clip-text text-transparent mb-8">
+      Dashboard
+    </h1>
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-xl border border-white/10 rounded-2xl p-6 hover:border-violet-500/30 transition-all duration-300 hover:shadow-lg hover:shadow-violet-500/10">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-gradient-to-br from-violet-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
+            <Icon className="text-white" />
+          </div>
+          <div>
+            <p className="text-slate-400 text-sm">Total Users</p>
+            <p className="text-2xl font-bold text-white">12,847</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+\`\`\`
+
 - Responsive design (mobile-first)
 - Accessible (ARIA labels, semantic HTML)
-- Professional color schemes
+- Dark mode by default, light mode optional
 
 💬 AI CHAT FEATURES (Include for chat/AI apps):
 When building ANY application with chat or AI assistant features, ALWAYS include:
@@ -2146,6 +2264,54 @@ DATABASE PROVIDER: None (Stateless/Mock)
         try { fs.unlinkSync(req.file.path); } catch {}
       }
       res.status(500).json({ error: "Failed to extract ZIP file", details: error.message });
+    }
+  });
+
+  // ======================================================
+  // EXTRACT DOCUMENT - Parse PDF/Word files into text
+  // ======================================================
+  app.post("/api/extract-document", upload.single("file"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+      
+      const filePath = req.file.path;
+      const fileName = req.file.originalname.toLowerCase();
+      let content = "";
+      
+      if (fileName.endsWith(".pdf")) {
+        const dataBuffer = fs.readFileSync(filePath);
+        const pdfData = await pdfParse(dataBuffer);
+        content = pdfData.text;
+      } else if (fileName.endsWith(".docx")) {
+        const result = await mammoth.extractRawText({ path: filePath });
+        content = result.value;
+      } else if (fileName.endsWith(".doc")) {
+        const result = await mammoth.extractRawText({ path: filePath });
+        content = result.value;
+      } else {
+        content = fs.readFileSync(filePath, "utf-8");
+      }
+      
+      // Clean up uploaded file
+      try {
+        fs.unlinkSync(filePath);
+      } catch (cleanupErr) {
+        console.log("Cleanup warning:", cleanupErr);
+      }
+      
+      res.json({
+        files: [{ path: req.file.originalname, content }],
+        fileCount: 1,
+        extractedChars: content.length,
+      });
+    } catch (error: any) {
+      console.error("Document extraction error:", error);
+      if (req.file?.path) {
+        try { fs.unlinkSync(req.file.path); } catch {}
+      }
+      res.status(500).json({ error: "Failed to extract document", details: error.message });
     }
   });
 

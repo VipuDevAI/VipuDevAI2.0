@@ -961,8 +961,9 @@ Be concise but helpful. Suggest improvements to their description.`;
     if (!files || files.length === 0) return;
 
     const file = files[0];
+    const fileName = file.name.toLowerCase();
     
-    if (file.name.endsWith(".zip")) {
+    if (fileName.endsWith(".zip")) {
       setIsExtractingZip(true);
       try {
         const formData = new FormData();
@@ -982,6 +983,30 @@ Be concise but helpful. Suggest improvements to their description.`;
         toast.success(`Extracted ${data.fileCount} files from ${file.name}`);
       } catch (err) {
         toast.error("Failed to extract ZIP file");
+        console.error(err);
+      } finally {
+        setIsExtractingZip(false);
+      }
+    } else if (fileName.endsWith(".pdf") || fileName.endsWith(".doc") || fileName.endsWith(".docx")) {
+      setIsExtractingZip(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        
+        const response = await fetch("/api/extract-document", {
+          method: "POST",
+          body: formData,
+        });
+        
+        if (!response.ok) {
+          throw new Error("Failed to extract document");
+        }
+        
+        const data = await response.json();
+        setAttachedProjectFiles(data.files);
+        toast.success(`Extracted text from ${file.name}`);
+      } catch (err) {
+        toast.error("Failed to extract document");
         console.error(err);
       } finally {
         setIsExtractingZip(false);
@@ -1061,6 +1086,25 @@ Be concise but helpful. Suggest improvements to their description.`;
           <div className="flex items-center gap-2">
             {mainTab === "generate" && generatedFiles.length > 0 && (
               <>
+                <button
+                  onClick={() => {
+                    setGeneratedFiles([]);
+                    setGeneratedProjectName("");
+                    setSelectedFile(null);
+                    setPrompt("");
+                    setCurrentStep(1);
+                    setChatMessages([]);
+                    setAttachedProjectFiles([]);
+                    localStorage.removeItem("vipudev_generated_files");
+                    localStorage.removeItem("vipudev_project_name");
+                    toast.success("Started new project!");
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 transition-all text-sm font-medium"
+                  data-testid="button-new-project"
+                >
+                  <Plus className="w-4 h-4" />
+                  New Project
+                </button>
                 {githubStatus?.connected && (
                   <button
                     onClick={() => {
@@ -1448,7 +1492,7 @@ Be concise but helpful. Suggest improvements to their description.`;
                   ref={projectFileInputRef}
                   onChange={handleProjectFileAttach}
                   className="hidden"
-                  accept=".zip,.ts,.tsx,.js,.jsx,.json,.html,.css,.py,.go,.rs,.md,.txt,.yaml,.yml"
+                  accept=".zip,.ts,.tsx,.js,.jsx,.json,.html,.css,.py,.go,.rs,.md,.txt,.yaml,.yml,.pdf,.doc,.docx"
                   data-testid="input-project-files"
                 />
                 <div className="mt-3 flex items-center gap-3">
@@ -2439,7 +2483,7 @@ Be concise but helpful. Suggest improvements to their description.`;
                 onChange={handleFileSelect}
                 className="hidden"
                 multiple
-                accept=".txt,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.css,.html,.json,.md,.yaml,.yml,.xml,.sql,.sh,.zip"
+                accept=".txt,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.css,.html,.json,.md,.yaml,.yml,.xml,.sql,.sh,.zip,.pdf,.doc,.docx"
                 data-testid="input-builder-file"
               />
               <button
