@@ -21,10 +21,28 @@ import { exec } from "child_process";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from "docx";
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
-const mammoth = require("mammoth");
+
+// Dynamic imports for CJS compatibility in production builds
+let pdfParse: any = null;
+let mammoth: any = null;
+
+async function loadDocumentParsers() {
+  if (!pdfParse) {
+    try {
+      const pdfModule = await import("pdf-parse");
+      pdfParse = pdfModule.default || pdfModule;
+    } catch (e) {
+      console.warn("pdf-parse not available");
+    }
+  }
+  if (!mammoth) {
+    try {
+      mammoth = await import("mammoth");
+    } catch (e) {
+      console.warn("mammoth not available");
+    }
+  }
+}
 
 // ========================================================
 // AUTH CONFIG
@@ -2276,18 +2294,31 @@ DATABASE PROVIDER: None (Stateless/Mock)
         return res.status(400).json({ error: "No file uploaded" });
       }
       
+      // Load document parsers on first use
+      await loadDocumentParsers();
+      
       const filePath = req.file.path;
       const fileName = req.file.originalname.toLowerCase();
       let content = "";
       
       if (fileName.endsWith(".pdf")) {
+        if (!pdfParse) {
+          return res.status(500).json({ error: "PDF parser not available" });
+        }
         const dataBuffer = fs.readFileSync(filePath);
         const pdfData = await pdfParse(dataBuffer);
         content = pdfData.text;
       } else if (fileName.endsWith(".docx")) {
+        if (!mammoth) {
+          return res.status(500).json({ error: "Word parser not available" });
+        }
         const result = await mammoth.extractRawText({ path: filePath });
         content = result.value;
       } else if (fileName.endsWith(".doc")) {
+        // Note: mammoth only supports .docx, .doc files may not extract properly
+        if (!mammoth) {
+          return res.status(500).json({ error: "Word parser not available" });
+        }
         const result = await mammoth.extractRawText({ path: filePath });
         content = result.value;
       } else {
